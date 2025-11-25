@@ -1,0 +1,929 @@
+# Amazon EFS (Elastic File System) — Shared File Storage for Linux Instances
+
+## Complete Guide with Examples and Best Practices
+
+---
+
+## Table of Contents
+1. [Overview](#overview)
+2. [Key Concepts](#key-concepts)
+3. [Performance Modes](#performance-modes)
+4. [Throughput Modes](#throughput-modes)
+5. [Storage Classes](#storage-classes)
+6. [Step-by-Step Examples](#step-by-step-examples)
+7. [Real-World Use Cases](#real-world-use-cases)
+8. [Best Practices](#best-practices)
+9. [Troubleshooting](#troubleshooting)
+
+---
+
+## Overview
+
+Amazon EFS (Elastic File System) is a fully managed, serverless, set-and-forget elastic file system for use with AWS Cloud services and on-premises resources. It provides a simple, scalable, and highly available shared file storage that can be mounted on multiple EC2 instances simultaneously.
+
+**Key Difference from EBS:**
+- **EBS**: Block storage, attached to single EC2 instance
+- **EFS**: Network file system, shared across multiple EC2 instances in same VPC
+
+**Key Characteristics:**
+- Shared file system accessible from multiple EC2 instances
+- Automatic scaling (grows and shrinks automatically)
+- Highly available and durable
+- Pay only for what you use (no pre-provisioning)
+- Supports both Linux and containerized applications
+
+---
+
+## Key Concepts
+
+### 1. File System
+- Distributed storage for sharing files across multiple EC2 instances
+- Mounted via NFS (Network File System) v4.1 protocol
+- Accessible from EC2 instances in same VPC and optionally on-premises
+
+### 2. Mount Targets
+- Network interface in a subnet through which instances mount EFS
+- Must create mount target in each AZ you want to access EFS
+- Each mount target has IP address in the subnet
+
+### 3. Security Groups
+- Control traffic between EC2 instances and mount targets
+- Require NFS protocol (port 2049) inbound access
+
+### 4. Automatic Scaling
+- No provisioning required
+- File system grows and shrinks automatically
+- No performance degradation as storage grows
+
+### 5. Replication and Durability
+- Data replicated across multiple AZs (standard)
+- One Zone storage class for single-AZ deployment
+
+### 6. Access Points
+- Enforce a user identity and root directory for applications
+- Simplify access control and application-level permissions
+- Enforce directory-level permissions
+
+---
+
+## Performance Modes
+
+### 1. General Purpose Mode (Default, Recommended)
+- **Best for:** Most file serving workloads
+- **Characteristics:**
+  - Lowest latencies
+  - Suitable for web serving, content management, general file serving
+  - Recommended for 99% of use cases
+- **Use when:** Performance is critical for general-purpose workloads
+
+```bash
+# Create EFS with General Purpose mode (default)
+aws efs create-file-system \
+  --performance-mode generalPurpose \
+  --throughput-mode bursting \
+  --encrypted \
+  --tags Key=Name,Value=MyEFS
+```
+
+### 2. Max IO Performance Mode
+- **Best for:** Highly parallelized workloads
+- **Characteristics:**
+  - Higher levels of aggregate throughput and operations per second
+  - Trade-off: Slightly higher latencies
+  - Suitable for big data analytics, media processing, genomic analysis
+- **Use when:** Throughput and operations-per-second matter more than latency
+
+```bash
+# Create EFS with Max IO mode
+aws efs create-file-system \
+  --performance-mode maxIO \
+  --throughput-mode bursting \
+  --encrypted \
+  --tags Key=Name,Value=HighThroughputEFS
+```
+
+**Performance Comparison:**
+
+| Aspect | General Purpose | Max IO |
+|--------|-----------------|--------|
+| Latency | Lower (ms) | Higher (ms) |
+| Throughput | Good | Higher |
+| Operations/sec | Good | Higher |
+| Best for | Web, CMS, general | Big data, analytics |
+
+---
+
+## Throughput Modes
+
+### 1. Bursting Throughput Mode (Default)
+- **Baseline:** 50 MB/s per TB of data stored
+- **Burst:** Up to 100 MB/s per TB (30 minutes per day per GB)
+- **Cost:** Lower (based on storage only)
+- **Best for:** Typical file serving workloads with occasional spikes
+
+```bash
+# Create EFS with Bursting throughput
+aws efs create-file-system \
+  --throughput-mode bursting \
+  --encrypted \
+  --tags Key=Name,Value=BurstingEFS
+```
+
+**Example Calculation:**
+```
+File system size: 100 GB
+Baseline throughput: 50 MB/s per TB = 50 × 0.1 = 5 MB/s
+Burst throughput: 100 MB/s per TB = 100 × 0.1 = 10 MB/s
+
+Can burst up to 10 MB/s for 30 minutes × 100 = 3,000 minutes = 50 hours per day
+```
+
+### 2. Provisioned Throughput Mode
+- **Fixed throughput:** You specify desired throughput (1 MB/s to 1,024 MB/s)
+- **Cost:** Higher (based on provisioned throughput)
+- **Best for:** Consistent, predictable throughput requirements
+
+```bash
+# Create EFS with Provisioned throughput (100 MB/s)
+aws efs create-file-system \
+  --throughput-mode provisioned \
+  --provisioned-throughput-in-mibps 100 \
+  --encrypted \
+  --tags Key=Name,Value=ProvisionedEFS
+```
+
+**Throughput Mode Comparison:**
+
+| Aspect | Bursting | Provisioned |
+|--------|----------|-------------|
+| Cost Model | Storage-based | Throughput-based |
+| Baseline | 50 MB/s per TB | User-defined |
+| Burst Capability | 100 MB/s per TB | Yes (spillover) |
+| Best for | Typical workloads | Consistent high throughput |
+| Price per TB | Lower | Higher |
+
+---
+
+## Storage Classes
+
+### 1. Standard Storage Class
+- Default, recommended for most workloads
+- Full support for all EFS features
+- Data in all AZs simultaneously
+
+```bash
+# Create with Standard storage (default)
+aws efs create-file-system \
+  --availability-zone-name us-east-1a \
+  --encrypted \
+  --tags Key=Name,Value=StandardEFS
+```
+
+### 2. One Zone Storage Class
+- Single-AZ storage
+- 50% cheaper than Standard
+- Data replicated within single AZ only
+- Suitable for non-critical, non-production workloads
+
+```bash
+# Create with One Zone storage
+aws efs create-file-system \
+  --storage-redundancy-type ONE_ZONE \
+  --encrypted \
+  --tags Key=Name,Value=OneZoneEFS
+```
+
+### 3. Infrequent Access (IA) Storage Class
+- Automatically transitions files to lower-cost IA storage
+- Reactivated when accessed
+- Cost: ~95% cheaper than Standard for infrequent access patterns
+
+```bash
+# Create with IA lifecycle
+aws efs put-lifecycle-configuration \
+  --file-system-id fs-12345678 \
+  --lifecycle-policies TransitionToIA=AFTER_30_DAYS
+```
+
+---
+
+## Step-by-Step Examples
+
+### Example 1: Create EFS and Mount on EC2 Instances
+
+#### Step 1: Create Security Group for EFS
+
+```bash
+# Create security group
+aws ec2 create-security-group \
+  --group-name efs-sg \
+  --description "Security group for EFS mount targets" \
+  --vpc-id vpc-12345678
+
+# Get security group ID
+SG_ID=$(aws ec2 describe-security-groups \
+  --filters Name=group-name,Values=efs-sg \
+  --query 'SecurityGroups[0].GroupId' \
+  --output text)
+
+# Allow NFS traffic (port 2049) from EC2 instances
+aws ec2 authorize-security-group-ingress \
+  --group-id $SG_ID \
+  --protocol tcp \
+  --port 2049 \
+  --source-security-group-id $SG_ID
+
+# Allow traffic from EC2 security group (optional additional security group)
+aws ec2 authorize-security-group-ingress \
+  --group-id $SG_ID \
+  --protocol tcp \
+  --port 2049 \
+  --source-security-group-id sg-ec2instances
+```
+
+#### Step 2: Create EFS File System
+
+```bash
+# Create EFS file system
+aws efs create-file-system \
+  --performance-mode generalPurpose \
+  --throughput-mode bursting \
+  --encrypted \
+  --tags Key=Name,Value=SharedData Key=Environment,Value=Production
+
+# Get File System ID
+FILE_SYSTEM_ID=$(aws efs describe-file-systems \
+  --query 'FileSystems[0].FileSystemId' \
+  --output text)
+
+echo "File System ID: $FILE_SYSTEM_ID"
+```
+
+**Output:**
+```
+{
+  "FileSystemId": "fs-1234567890abcdef0",
+  "CreationTime": "2025-11-25T17:00:00Z",
+  "FileSystemStatus": "creating",
+  "PerformanceMode": "generalPurpose",
+  "ThroughputMode": "bursting",
+  "Encrypted": true,
+  "Size": {
+    "Value": 0,
+    "Timestamp": "2025-11-25T17:00:00Z"
+  },
+  "Tags": [
+    {
+      "Key": "Name",
+      "Value": "SharedData"
+    }
+  ]
+}
+```
+
+#### Step 3: Create Mount Targets in Each Availability Zone
+
+```bash
+# Get VPC subnets in different AZs
+SUBNET_1=$(aws ec2 describe-subnets \
+  --filters Name=vpc-id,Values=vpc-12345678 Name=availability-zone,Values=us-east-1a \
+  --query 'Subnets[0].SubnetId' \
+  --output text)
+
+SUBNET_2=$(aws ec2 describe-subnets \
+  --filters Name=vpc-id,Values=vpc-12345678 Name=availability-zone,Values=us-east-1b \
+  --query 'Subnets[0].SubnetId' \
+  --output text)
+
+# Create mount target in us-east-1a
+aws efs create-mount-target \
+  --file-system-id $FILE_SYSTEM_ID \
+  --subnet-id $SUBNET_1 \
+  --security-groups $SG_ID
+
+# Create mount target in us-east-1b
+aws efs create-mount-target \
+  --file-system-id $FILE_SYSTEM_ID \
+  --subnet-id $SUBNET_2 \
+  --security-groups $SG_ID
+
+echo "Mount targets created"
+```
+
+#### Step 4: Install EFS Utils on EC2 Instance
+
+SSH to EC2 instance and install utilities:
+
+```bash
+# For Amazon Linux 2
+sudo yum install -y nfs-utils
+sudo yum install -y amazon-efs-utils
+
+# For Ubuntu
+sudo apt-get update
+sudo apt-get install -y nfs-common
+sudo apt-get install -y amazon-efs-utils
+
+# For RHEL/CentOS
+sudo yum install -y nfs-utils
+sudo yum install amazon-efs-utils -y
+```
+
+#### Step 5: Create Mount Point and Mount EFS
+
+```bash
+# Create mount point
+sudo mkdir -p /mnt/efs
+
+# Mount EFS using mount helper (recommended for encryption)
+sudo mount -t efs -o tls $FILE_SYSTEM_ID:/ /mnt/efs
+
+# Alternative: Mount using NFS directly (without encryption)
+# sudo mount -t nfs4 -o nfsvers=4.1,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2 \
+#   fs-12345678.efs.us-east-1.amazonaws.com:/ /mnt/efs
+
+# Verify mount
+df -h
+# Output:
+# Filesystem                                    Size  Used Avail Use% Mounted on
+# fs-1234567890abcdef0.efs.us-east-1.amazonaws.com:/  1.0P     0  1.0P   0% /mnt/efs
+```
+
+#### Step 6: Persist Mount in /etc/fstab
+
+```bash
+# Get file system DNS name
+FILE_SYSTEM_DNS=$(aws efs describe-file-systems \
+  --file-system-id $FILE_SYSTEM_ID \
+  --query 'FileSystems[0].Name' \
+  --output text)
+
+# Add to /etc/fstab
+echo "$FILE_SYSTEM_ID:/ /mnt/efs efs defaults,_netdev,tls 0 0" | sudo tee -a /etc/fstab
+
+# Or using mount helper
+# echo "$FILE_SYSTEM_ID:/ /mnt/efs efs defaults,_netdev 0 0" | sudo tee -a /etc/fstab
+```
+
+#### Step 7: Test Write and Read
+
+```bash
+# Create test file
+echo "Hello from EFS!" | sudo tee /mnt/efs/test.txt
+
+# Verify from another instance (mount EFS there too, then read):
+sudo cat /mnt/efs/test.txt
+# Output: Hello from EFS!
+
+# Create shared directory
+sudo mkdir -p /mnt/efs/shared-data
+sudo chmod 777 /mnt/efs/shared-data
+
+# Create test file accessible from other instances
+echo "Shared by Instance 1" | sudo tee /mnt/efs/shared-data/instance1.txt
+```
+
+#### Step 8: Mount Same EFS on Second EC2 Instance
+
+Repeat Steps 4-6 on second EC2 instance in different AZ:
+
+```bash
+# Install utilities
+sudo yum install -y nfs-utils amazon-efs-utils
+
+# Create mount point
+sudo mkdir -p /mnt/efs
+
+# Mount EFS (same FILE_SYSTEM_ID)
+sudo mount -t efs -o tls fs-1234567890abcdef0:/ /mnt/efs
+
+# Verify shared files
+ls -la /mnt/efs/shared-data/
+# Output shows files created by Instance 1
+
+cat /mnt/efs/shared-data/instance1.txt
+# Output: Shared by Instance 1
+```
+
+---
+
+### Example 2: Use Access Points for Application-Level Permissions
+
+#### Create Access Point
+
+```bash
+# Create access point for application
+aws efs create-access-point \
+  --file-system-id fs-1234567890abcdef0 \
+  --posix-user Uid=1000,Gid=1000 \
+  --root-directory Path="/app-data",CreationInfo=OwnerUid=1000,OwnerGid=1000,Permissions=755 \
+  --tags Key=Name,Value=AppAccessPoint
+
+# Get Access Point ID
+ACCESS_POINT_ID=$(aws efs describe-access-points \
+  --file-system-id fs-1234567890abcdef0 \
+  --query 'AccessPoints[0].AccessPointId' \
+  --output text)
+
+echo "Access Point ID: $ACCESS_POINT_ID"
+```
+
+#### Mount Using Access Point
+
+```bash
+# Create application mount point
+sudo mkdir -p /mnt/efs-app
+
+# Mount using access point
+sudo mount -t efs -o tls,accesspoint=$ACCESS_POINT_ID fs-1234567890abcdef0:/ /mnt/efs-app
+
+# Verify - should show /app-data as root
+df -h /mnt/efs-app
+ls -la /mnt/efs-app
+```
+
+**Benefits of Access Points:**
+- Enforces user identity and permissions
+- Applications run with specific UID/GID
+- Enforces directory-level permissions
+- Simplifies application deployment
+
+---
+
+### Example 3: Enable Lifecycle Policies (Infrequent Access)
+
+```bash
+# Enable automatic transition to Infrequent Access
+aws efs put-lifecycle-configuration \
+  --file-system-id fs-1234567890abcdef0 \
+  --lifecycle-policies TransitionToIA=AFTER_30_DAYS,TransitionToPrimaryStorageClass=AFTER_1_HOUR
+
+# Verify lifecycle configuration
+aws efs describe-lifecycle-configuration \
+  --file-system-id fs-1234567890abcdef0
+```
+
+**Output:**
+```json
+{
+  "LifecyclePolicies": [
+    {
+      "TransitionToIA": "AFTER_30_DAYS"
+    },
+    {
+      "TransitionToPrimaryStorageClass": "AFTER_1_HOUR"
+    }
+  ]
+}
+```
+
+**How It Works:**
+1. Files not accessed for 30 days automatically move to IA storage
+2. When file is accessed, it transitions back to standard storage
+3. Cost: 95% cheaper for IA storage, minimal access penalty
+
+---
+
+### Example 4: Monitor EFS Performance with CloudWatch
+
+```bash
+# Get file system metrics
+aws cloudwatch get-metric-statistics \
+  --namespace AWS/EFS \
+  --metric-name BurstCreditBalance \
+  --dimensions Name=FileSystemId,Value=fs-1234567890abcdef0 \
+  --start-time 2025-11-25T00:00:00Z \
+  --end-time 2025-11-25T23:59:59Z \
+  --period 3600 \
+  --statistics Average,Minimum
+
+# Get throughput metrics
+aws cloudwatch get-metric-statistics \
+  --namespace AWS/EFS \
+  --metric-name TotalIOBytes \
+  --dimensions Name=FileSystemId,Value=fs-1234567890abcdef0 \
+  --start-time 2025-11-25T00:00:00Z \
+  --end-time 2025-11-25T23:59:59Z \
+  --period 300 \
+  --statistics Sum
+```
+
+**Key Metrics to Monitor:**
+- **BurstCreditBalance:** Available burst capacity (bursting mode)
+- **PermittedThroughput:** Max allowed throughput
+- **ClientConnections:** Number of EC2 instances connected
+- **TotalIOBytes:** Total bytes read/written
+- **MeteredIOBytes:** Metered operations (billed operations)
+
+---
+
+## Real-World Use Cases
+
+### Use Case 1: Shared Web Application Content
+
+**Scenario:** Multiple EC2 instances serving web content from shared file system
+
+```bash
+# Create EFS for web content
+aws efs create-file-system \
+  --performance-mode generalPurpose \
+  --throughput-mode bursting \
+  --encrypted \
+  --tags Key=Name,Value=WebContent Key=Application,Value=WebApp
+
+# Create access point for web server
+aws efs create-access-point \
+  --file-system-id fs-web12345 \
+  --posix-user Uid=33,Gid=33 \
+  --root-directory Path="/var/www/html",CreationInfo=OwnerUid=33,OwnerGid=33,Permissions=755 \
+  --tags Key=Name,Value=WebAccessPoint
+
+# On each web server instance:
+sudo mount -t efs -o tls,accesspoint=fsap-web12345 fs-web12345:/ /var/www/html
+
+# All instances now serve same content
+# Deploy changes once, propagate to all instances
+```
+
+**Benefits:**
+- Single deployment location for all web servers
+- Automatic content replication across instances
+- No need for file sync tools
+- Horizontal scaling easier
+
+### Use Case 2: Machine Learning Model Training
+
+**Scenario:** Multiple GPU instances reading training data from shared EFS
+
+```bash
+# Create EFS for training data
+aws efs create-file-system \
+  --performance-mode maxIO \
+  --throughput-mode provisioned \
+  --provisioned-throughput-in-mibps 500 \
+  --encrypted \
+  --tags Key=Name,Value=MLTrainingData Key=Workload,Value=DataScience
+
+# Create mount targets in all AZs with GPU instances
+# Mount on each GPU instance:
+sudo mount -t efs -o tls fs-ml12345:/ /mnt/ml-data
+
+# Training script reads from /mnt/ml-data
+# Multiple instances train on same dataset simultaneously
+```
+
+**Benefits:**
+- Thousands of EC2 instances can read same data
+- No local storage bottleneck
+- Scales automatically with demand
+- Max IO mode handles high concurrency
+
+### Use Case 3: Continuous Integration/Continuous Deployment (CI/CD)
+
+**Scenario:** Build artifacts and logs shared across CI/CD pipeline
+
+```bash
+# Create EFS for CI/CD artifacts
+aws efs create-file-system \
+  --performance-mode generalPurpose \
+  --throughput-mode bursting \
+  --encrypted \
+  --tags Key=Name,Value=CICDArtefacts Key=Pipeline,Value=Build
+
+# Jenkins/GitLab CI mount EFS
+# Build artifacts stored in /mnt/efs/artifacts
+# Logs stored in /mnt/efs/logs
+
+# Structure:
+# /mnt/efs/
+#   ├── artifacts/
+#   │   ├── build-1/
+#   │   ├── build-2/
+#   │   └── build-3/
+#   ├── logs/
+#   │   ├── build-1.log
+#   │   ├── build-2.log
+#   │   └── build-3.log
+#   └── cache/
+#       └── dependencies/
+```
+
+**Benefits:**
+- Shared build cache across all build agents
+- Centralized artifact storage
+- Easy access to historical logs
+- No S3 sync overhead
+
+### Use Case 4: Database Backup and Recovery
+
+**Scenario:** Multiple database servers backing up to shared EFS
+
+```bash
+# Create EFS for database backups
+aws efs create-file-system \
+  --performance-mode generalPurpose \
+  --throughput-mode provisioned \
+  --provisioned-throughput-in-mibps 100 \
+  --storage-redundancy-type STANDARD \
+  --encrypted \
+  --tags Key=Name,Value=DBBackups Key=DataType,Value=Critical
+
+# Backup script on each database:
+#!/bin/bash
+DB_NAME="mydb"
+BACKUP_PATH="/mnt/efs/backups/${DB_NAME}"
+TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+
+mysqldump -u root -p${DB_PASSWORD} ${DB_NAME} | gzip > ${BACKUP_PATH}/backup_${TIMESTAMP}.sql.gz
+
+# Retention policy: Keep last 30 days
+find ${BACKUP_PATH} -type f -mtime +30 -delete
+
+echo "Backup completed: ${BACKUP_PATH}/backup_${TIMESTAMP}.sql.gz"
+```
+
+**Benefits:**
+- Centralized backup location
+- Easy recovery from any database instance
+- Cost-effective vs S3 for frequent access
+- Automatic scaling with data growth
+
+---
+
+## Best Practices
+
+### 1. Use Security Groups Properly
+```bash
+# Allow NFS traffic only from authorized EC2 instances
+aws ec2 authorize-security-group-ingress \
+  --group-id sg-efs1234 \
+  --protocol tcp \
+  --port 2049 \
+  --source-security-group-id sg-ec2instances
+
+# Don't allow from 0.0.0.0/0 (security risk)
+```
+
+### 2. Enable Encryption
+```bash
+# Always enable encryption at rest
+aws efs create-file-system \
+  --encrypted \
+  --kms-key-id alias/aws/efs
+```
+
+### 3. Use Mount Targets in Multiple AZs
+```bash
+# Create mount targets in each AZ for high availability
+# Prevents single point of failure
+# Instances mount from nearest mount target
+```
+
+### 4. Implement Access Points for Applications
+```bash
+# Enforce user identity and permissions per application
+aws efs create-access-point \
+  --file-system-id fs-12345 \
+  --posix-user Uid=1000,Gid=1000 \
+  --root-directory Path="/app"
+```
+
+### 5. Enable Lifecycle Policies
+```bash
+# Transition infrequently accessed files to IA
+aws efs put-lifecycle-configuration \
+  --file-system-id fs-12345 \
+  --lifecycle-policies TransitionToIA=AFTER_30_DAYS
+```
+
+### 6. Monitor Performance
+```bash
+# Set CloudWatch alarms for burst credit balance
+aws cloudwatch put-metric-alarm \
+  --alarm-name efs-low-burst-credits \
+  --alarm-description "Alert when burst credits low" \
+  --metric-name BurstCreditBalance \
+  --namespace AWS/EFS \
+  --statistic Average \
+  --period 300 \
+  --threshold 10737418240 \
+  --comparison-operator LessThanThreshold
+```
+
+### 7. Tag Resources for Cost Management
+```bash
+aws efs create-tags \
+  --file-system-id fs-12345 \
+  --tags Key=Environment,Value=Production \
+         Key=CostCenter,Value=Engineering \
+         Key=Application,Value=WebApp
+```
+
+### 8. Regular Backups
+```bash
+# Backup critical data periodically
+aws efs create-backup-vault --backup-vault-name efs-backups
+
+# Or use AWS Backup service for automated backups
+```
+
+---
+
+## Troubleshooting
+
+### Problem 1: Mount Fails with "Connection Refused"
+
+**Error:** `mount.nfs: Connection refused`
+
+**Solution:**
+```bash
+# Verify security group allows NFS (port 2049)
+aws ec2 describe-security-groups \
+  --group-ids sg-12345 \
+  --query 'SecurityGroups[0].IpPermissions'
+
+# Check if mount target is available
+aws efs describe-mount-targets \
+  --file-system-id fs-12345
+
+# Verify EC2 instance is in same VPC as mount target
+aws ec2 describe-instances --instance-ids i-12345 \
+  --query 'Reservations[0].Instances[0].VpcId'
+```
+
+### Problem 2: Slow Performance
+
+**Symptoms:** High latency, low throughput
+
+**Solution:**
+```bash
+# Check if using burst mode and credits depleted
+aws cloudwatch get-metric-statistics \
+  --namespace AWS/EFS \
+  --metric-name BurstCreditBalance \
+  --dimensions Name=FileSystemId,Value=fs-12345 \
+  --start-time 2025-11-25T00:00:00Z \
+  --end-time 2025-11-25T23:59:59Z \
+  --period 300 \
+  --statistics Average
+
+# If credits depleted, upgrade to provisioned throughput:
+aws efs modify-throughput-configuration \
+  --file-system-id fs-12345 \
+  --throughput-mode provisioned \
+  --provisioned-throughput-in-mibps 100
+
+# Or check for Max IO mode performance
+aws efs describe-file-systems --file-system-id fs-12345 \
+  --query 'FileSystems[0].PerformanceMode'
+```
+
+### Problem 3: Mount Not Persistent After Reboot
+
+**Error:** EFS mount missing after instance reboot
+
+**Solution:**
+```bash
+# Verify /etc/fstab entry exists
+sudo cat /etc/fstab | grep efs
+
+# Entry should look like:
+# fs-12345678:/ /mnt/efs efs defaults,_netdev,tls 0 0
+
+# If missing, add it:
+echo "fs-12345678:/ /mnt/efs efs defaults,_netdev,tls 0 0" | sudo tee -a /etc/fstab
+
+# Test by remounting
+sudo mount -a
+
+# Verify
+df -h | grep efs
+```
+
+### Problem 4: "Permission Denied" Accessing Files
+
+**Error:** `Permission denied` when accessing EFS files
+
+**Solution:**
+```bash
+# Check file permissions
+ls -la /mnt/efs/
+
+# Check access point permissions
+aws efs describe-access-points --file-system-id fs-12345
+
+# Fix ownership if needed (as root)
+sudo chown -R 1000:1000 /mnt/efs/mydir
+sudo chmod -R 755 /mnt/efs/mydir
+
+# Use access point with correct UID/GID
+aws efs create-access-point \
+  --file-system-id fs-12345 \
+  --posix-user Uid=$(id -u),Gid=$(id -g) \
+  --root-directory Path="/data"
+```
+
+### Problem 5: Connection Timeout During Mount
+
+**Error:** `connection timed out` when mounting
+
+**Solution:**
+```bash
+# Ensure EC2 instance has internet connectivity
+ping 8.8.8.8
+
+# Verify NFS utils installed
+sudo yum list installed | grep nfs
+# If not installed:
+sudo yum install -y nfs-utils amazon-efs-utils
+
+# Test DNS resolution
+nslookup fs-12345678.efs.us-east-1.amazonaws.com
+
+# Try mounting with verbose output
+sudo mount -v -t efs -o tls fs-12345678:/ /mnt/efs
+
+# Check mount target status
+aws efs describe-mount-targets \
+  --file-system-id fs-12345678 \
+  --query 'MountTargets[*].[MountTargetId,LifeCycleState]'
+```
+
+---
+
+## Cost Optimization
+
+### Pricing Breakdown (US East-1, 2025)
+
+```
+Standard Storage:
+- $0.30 per GB-month
+
+Infrequent Access Storage:
+- $0.025 per GB-month (92% cheaper)
+
+Provisioned Throughput (additional to storage):
+- $0.0346 per provisioned MB/s-month
+
+Example Scenarios:
+
+Scenario 1: 100 GB, Bursting Mode
+- Storage: 100 GB × $0.30 = $30/month
+- Total: $30/month
+
+Scenario 2: 100 GB with Infrequent Access (70% moved to IA)
+- Standard: 30 GB × $0.30 = $9/month
+- IA: 70 GB × $0.025 = $1.75/month
+- Requests: ~$0.50/month
+- Total: ~$11.25/month (62% savings)
+
+Scenario 3: 1 TB, Provisioned 100 MB/s
+- Storage: 1,000 GB × $0.30 = $300/month
+- Throughput: 100 MB/s × $0.0346 = $3.46/month
+- Total: ~$303.46/month
+```
+
+### Cost Optimization Tips
+
+1. **Use Infrequent Access Storage Class**
+   - Automatically transition unused files (saves 92% on IA)
+   - Minimal latency penalty when file accessed
+
+2. **Right-Size Throughput Mode**
+   - Use bursting for typical workloads
+   - Only use provisioned for consistent high throughput
+
+3. **Consolidate File Systems**
+   - Use single EFS with multiple access points (cheaper than multiple file systems)
+
+4. **Delete Unused Snapshots and Backups**
+   - Snapshots consume storage space
+
+5. **Monitor Usage**
+   - Set CloudWatch alarms for cost tracking
+   - Review monthly EFS spending
+
+---
+
+## Summary
+
+Amazon EFS provides:
+- ✅ **Shared file system** accessible from multiple EC2 instances
+- ✅ **Automatic scaling** (no provisioning required)
+- ✅ **High availability** across multiple AZs
+- ✅ **Cost-effective** with infrequent access storage class
+- ✅ **Secure** with encryption and access points
+- ✅ **Managed service** (no maintenance required)
+
+EFS is ideal for:
+- Shared application data across multiple instances
+- Distributed workloads requiring common data
+- Database backups and logs
+- Machine learning datasets
+- CI/CD pipelines and build artifacts
+
+---
+
+**Last Updated:** November 25, 2025
+**Version:** 1.0
+**Comprehensive Coverage:** All aspects of Amazon EFS with real-world examples, CLI commands, and best practices.
