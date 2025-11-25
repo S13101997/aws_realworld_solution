@@ -1,0 +1,159 @@
+Amazon ECS (Elastic Container Service)
+Overview:
+Fully managed container orchestration service designed to run Docker containers.
+Simplifies running containers by abstracting infrastructure management.
+Integrates deeply with AWS services such as IAM, VPC, ELB, CloudWatch.
+------------------------------------------------------------------------
+Supports two launch types:
+
+1.EC2 Launch Type: Manage your own EC2 instances forming a cluster.
+
+2.Fargate Launch Type: Serverless containers without managing infrastructure.
+------------------------------------------------------------------------
+Example Use Case: Deploying a Microservice API on ECS with Fargate Launch Type
+
+Step-by-Step Example:
+1. Write your Dockerized Application
+
+Package your app as a Docker image.
+
+Push image to Amazon Elastic Container Registry (ECR).
+
+2. Create ECS Cluster
+
+Use Fargate launch type for serverless orchestration.
+
+3.  Define Task Definition
+
+Allocates CPU/memory resources and container info.
+
+Defines the Docker image, port mappings, and environment variables.
+
+json
+{
+  "family": "my-api-task",
+  "networkMode": "awsvpc",
+  "containerDefinitions": [
+    {
+      "name": "my-api-container",
+      "image": "123456789012.dkr.ecr.us-east-1.amazonaws.com/my-api:latest",
+      "cpu": 256,
+      "memory": 512,
+      "portMappings": [
+        {
+          "containerPort": 8080,
+          "protocol": "tcp"
+        }
+      ],
+      "essential": true
+    }
+  ],
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512"
+}
+
+4.  Create a Service
+
+Specifies desired number of tasks.
+
+Integrate with Application Load Balancer (ALB) for routing.
+
+Enables automatic health checking and replacement of failed containers.
+
+5.  Run and Scale
+
+Use AWS Console, CLI, or CloudFormation to deploy and scale.
+
+Use auto-scaling policies based on CPU or request counts.
+------------------------------------------------------------------------------------------
+Amazon EKS (Elastic Kubernetes Service)
+Overview:
+Fully managed Kubernetes control plane on AWS.
+
+Enables running Kubernetes clusters without managing the masters.
+
+Supports running any Kubernetes-compliant apps and tools with full flexibility.
+
+Allows cluster autoscaling, service meshes, and custom resource definitions (CRDs).
+
+Example Use Case: Deploy a Kubernetes Application on EKS
+Step-by-Step Example:
+1. Create an EKS Cluster
+
+bash
+aws eks create-cluster \
+  --name my-eks-cluster \
+  --role-arn arn:aws:iam::123456789012:role/EKSClusterRole \
+  --resources-vpc-config subnetIds=subnet-xxxxxx,subnet-yyyyyy,securityGroupIds=sg-zzzzzz
+
+2.  Provision Worker Nodes
+
+Use managed node groups or self-managed EC2 instances tagged to join the cluster.
+
+3.  Configure kubectl
+
+Update kubeconfig to connect to EKS cluster:
+
+bash
+aws eks update-kubeconfig --name my-eks-cluster
+
+4.  Deploy Application with Kubernetes Manifests
+
+Example deployment.yaml:
+
+text
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-api
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: my-api
+  template:
+    metadata:
+      labels:
+        app: my-api
+    spec:
+      containers:
+      - name: my-api
+        image: 123456789012.dkr.ecr.us-east-1.amazonaws.com/my-api:latest
+        ports:
+        - containerPort: 8080
+Create service to expose deployment:
+
+text
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-api-service
+spec:
+  selector:
+    app: my-api
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 8080
+  type: LoadBalancer
+
+5. Apply manifests:
+
+bash
+kubectl apply -f deployment.yaml
+kubectl apply -f service.yaml
+
+6. Autoscale
+
+Use Kubernetes Horizontal Pod Autoscaler (HPA) based on CPU/memory or custom metrics.
+
+Optionally integrate Cluster Autoscaler to add/remove nodes.
+
+-------------------------------------------------------------------------------
+Summary
+Amazon ECS offers simpler container orchestration fully integrated with AWS services, and is good for most containerized applications especially with Fargate.
+
+Amazon EKS is best for teams familiar with Kubernetes needing flexibility and multi-cloud capabilities.
+
+Both services support seamless scaling, rolling deployments, health checks, and integration with AWS security and networking.
