@@ -1,0 +1,115 @@
+AWS Auto Scaling for EC2 Instances
+Scenario:
+You run a web application on EC2 instances behind an Application Load Balancer (ALB). Traffic varies throughout the day, so you want to automatically scale the number of EC2 instances to maintain performance and reduce costs.
+
+Step 1: Create a Launch Template
+Define the instance configuration (AMI, instance type, security groups, user data):
+
+bash
+aws ec2 create-launch-template --launch-template-name WebAppLaunchTemplate \
+  --version-description "v1" \
+  --launch-template-data '{
+        "ImageId":"ami-0abcdef1234567890",
+        "InstanceType":"t3.medium",
+        "SecurityGroupIds":["sg-0123456789abcdef0"],
+        "UserData":"IyEvYmluL2Jhc2gKZWNobyAiSGVsbG8sIFdvcmxkISIgPiAvdmFyL3d3dy9odG1sL2luZGV4Lmh0bWw="
+      }'
+-------------------------------------------------------------------------------
+Step 2: Create an Auto Scaling Group (ASG)
+bash
+aws autoscaling create-auto-scaling-group \
+  --auto-scaling-group-name MyWebAppASG \
+  --launch-template "LaunchTemplateName=WebAppLaunchTemplate,Version=1" \
+  --min-size 2 \
+  --max-size 6 \
+  --desired-capacity 2 \
+  --vpc-zone-identifier "subnet-abcde123,subnet-bcdef234" \
+  --target-group-arns "arn:aws:elasticloadbalancing:region:account-id:targetgroup/my-target-group/0123456789abcdef"
+ASG launches instances into specified subnets.
+
+Attaches instances to the ALB target group.
+------------------------------------------------------------------------------------
+Step 3: Set up Scaling Policies
+Configure a target tracking scaling policy to keep average CPU utilization at ~50%.
+
+bash
+aws autoscaling put-scaling-policy \
+  --auto-scaling-group-name MyWebAppASG \
+  --policy-name CPU50PercentScalingPolicy \
+  --policy-type TargetTrackingScaling \
+  --target-tracking-configuration '{
+      "PredefinedMetricSpecification": {"PredefinedMetricType": "ASGAverageCPUUtilization"},
+      "TargetValue": 50.0,
+      "DisableScaleIn": false
+    }'
+------------------------------------------------------------------------------------------
+Step 4: (Optional) Configure Notifications
+Set up notifications when scaling events occur:
+
+bash
+aws autoscaling put-notification-configuration \
+  --auto-scaling-group-name MyWebAppASG \
+  --topic-arn arn:aws:sns:region:account-id:MyScalingTopic \
+  --notification-types "autoscaling:EC2_INSTANCE_LAUNCH" "autoscaling:EC2_INSTANCE_TERMINATE"
+
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+AWS Auto Scaling for ECS Tasks
+Scenario:
+You have a containerized microservice deployed using Amazon ECS with Fargate launch type. You want to automatically adjust the number of running tasks based on CPU usage or custom CloudWatch metrics.
+
+Step 1: Define ECS Service with Desired Count
+Create ECS service running 2 tasks:
+
+bash
+aws ecs create-service \
+  --cluster my-ecs-cluster \
+  --service-name my-api-service \
+  --task-definition my-api-task-def:1 \
+  --desired-count 2 \
+  --launch-type FARGATE \
+  --network-configuration 'awsvpcConfiguration={subnets=[subnet-abcde123],securityGroups=[sg-01234abcde],assignPublicIp="ENABLED"}' \
+  --load-balancers '[{"targetGroupArn":"arn:aws:elasticloadbalancing:region:account-id:targetgroup/my-tg/abcdef123456","containerName":"my-api-container","containerPort":80}]'
+--------------------------------------------------------------------------------------------------------
+Step 2: Enable ECS Service Auto Scaling
+Attach an IAM role for ECS Auto Scaling:
+
+bash
+aws iam create-service-linked-role --aws-service-name ecs.application-autoscaling.amazonaws.com
+---------------------------------------------------------------------------------------------------------
+Step 3: Create Application Auto Scaling Target
+Register scalable target for the ECS service:
+
+bash
+aws application-autoscaling register-scalable-target \
+  --service-namespace ecs \
+  --resource-id service/my-ecs-cluster/my-api-service \
+  --scalable-dimension ecs:service:DesiredCount \
+  --min-capacity 2 --max-capacity 10
+--------------------------------------------------------------------------------------------------
+Step 4: Create Target Tracking Scaling Policy
+Scale tasks to maintain average CPU utilization at 50%:
+
+bash
+aws application-autoscaling put-scaling-policy \
+  --policy-name cpu-target-tracking-policy \
+  --service-namespace ecs \
+  --resource-id service/my-ecs-cluster/my-api-service \
+  --scalable-dimension ecs:service:DesiredCount \
+  --policy-type TargetTrackingScaling \
+  --target-tracking-scaling-policy-configuration '{
+      "TargetValue": 50,
+      "PredefinedMetricSpecification": {
+          "PredefinedMetricType": "ECSServiceAverageCPUUtilization"
+      },
+      "ScaleInCooldown": 60,
+      "ScaleOutCooldown": 60
+  }'
+----------------------------------------------------------
+Real-World Use Case Summary
+Web Application on EC2 Instances: Automatically adjust number of web servers based on traffic spike (CPU usage or request count), maintaining performance and minimizing cost.
+
+Microservices on ECS Fargate: Dynamically scale backend microservices container tasks in response to load, improving resource efficiency and customer experience.
+
+Integration: Both EC2 and ECS can leverage AWS Application Auto Scaling with CloudWatch alarms and custom metrics for fine-tuned scaling control.
+
+This dynamic scaling capability of AWS Auto Scaling optimizes cost, ensures high availability, and matches compute resources to real-time demand without manual intervention.
