@@ -1,0 +1,165 @@
+# Amazon S3 (Simple Storage Service) — Object Storage, Versioning, Lifecycle Policies
+
+## Table of Contents
+1. [Overview](#overview)
+2. [Object Storage in S3](#object-storage)
+3. [Buckets](#buckets)
+4. [Enabling Versioning](#enabling-versioning)
+5. [Lifecycle Policies](#lifecycle-policies)
+6. [Storage Classes](#storage-classes)
+7. [Security & Access Control](#security)
+8. [Step-by-Step Example](#example)
+9. [Real-World Use Case](#real-world-use-case)
+
+---
+
+## Overview
+Amazon S3 is a highly scalable, durable, and secure object storage service. You can store and retrieve any amount of data, at any time, from anywhere on the web.
+
+---
+
+## Object Storage in S3
+- Organizes data as **objects** (not files or blocks) within **buckets**.
+- Each object has data, metadata, and a unique key (name).
+- Objects can be up to 5 TB in size.
+
+---
+
+## Buckets
+- A **bucket** is a container for objects.
+- Names must be globally unique.
+- Bucket-level configurations: Versioning, lifecycle, policies, encryption.
+
+---
+
+## Enabling Versioning
+- Keeps multiple versions of objects to prevent data loss.
+- Useful for recovery from accidental deletes/overwrites.
+
+**Enable with AWS CLI:**
+```bash
+aws s3api put-bucket-versioning \
+  --bucket my-app-logs \
+  --versioning-configuration Status=Enabled
+```
+
+- Every upload or overwrite creates a new version (unique version ID).
+- Listing objects shows *latest*, but all versions are retrievable.
+
+**Restore a deleted file:** Remove the delete marker or retrieve by version ID.
+
+---
+
+## Lifecycle Policies
+- Automate transition and expiration of objects for cost management.
+- Common actions:
+  - Move old objects to Glacier after N days
+  - Delete objects after M days
+  - Clean up old versions and incomplete multipart uploads
+
+**Example lifecycle configuration JSON:**
+```json
+{
+  "Rules": [
+    {
+      "ID": "Archive old logs",
+      "Prefix": "logs/",
+      "Status": "Enabled",
+      "Transitions": [
+        {"Days": 30, "StorageClass": "GLACIER"}
+      ],
+      "Expiration": {"Days": 365},
+      "NoncurrentVersionExpiration": {"NoncurrentDays": 90}
+    }
+  ]
+}
+```
+
+**Apply lifecycle policy:**
+```bash
+aws s3api put-bucket-lifecycle-configuration \
+  --bucket my-app-logs \
+  --lifecycle-configuration file://lifecycle.json
+```
+
+---
+
+## Storage Classes
+- **S3 Standard:** General purpose, frequent access.
+- **S3 Intelligent-Tiering:** Automatic cost optimization for changing access patterns.
+- **S3 Standard-IA:** Infrequent Access, quick retrievable.
+- **S3 Glacier / Glacier Deep Archive:** Archival, lowest cost, longer retrieval times.
+
+Objects can be transitioned between classes by lifecycle rules or on upload.
+
+---
+
+## Security & Access Control
+- **Bucket policies:** JSON-based fine-grained access control.
+- **IAM policies** for user/role permissions.
+- **Server-side encryption** (SSE-S3, SSE-KMS, SSE-C).
+- **SSL/TLS** for data in transit.
+- **Access logging** and AWS CloudTrail for auditing.
+
+---
+
+## Step-by-Step Example
+
+### 1. Create a Bucket
+```bash
+aws s3api create-bucket --bucket my-app-logs --region us-east-1 \
+  --create-bucket-configuration LocationConstraint=us-east-1
+```
+
+### 2. Enable Versioning
+```bash
+aws s3api put-bucket-versioning --bucket my-app-logs --versioning-configuration Status=Enabled
+```
+
+### 3. Upload Objects and Modify
+```bash
+aws s3 cp log1.txt s3://my-app-logs/logs/log1.txt
+# Change file and overwrite
+aws s3 cp log1.txt s3://my-app-logs/logs/log1.txt
+```
+- A new version ID is generated every time.
+
+### 4. List Object Versions
+```bash
+aws s3api list-object-versions --bucket my-app-logs --prefix logs/log1.txt
+```
+
+### 5. Add Lifecycle Policy (see above)
+```bash
+aws s3api put-bucket-lifecycle-configuration \
+  --bucket my-app-logs \
+  --lifecycle-configuration file://lifecycle.json
+```
+
+### 6. Retrieve by Version
+```bash
+aws s3api get-object --bucket my-app-logs --key logs/log1.txt --version-id <VersionId> log1_old.txt
+```
+
+### 7. Enable Encryption (SSE-S3)
+```bash
+aws s3api put-bucket-encryption --bucket my-app-logs \
+  --server-side-encryption-configuration '{"Rules": [{"ApplyServerSideEncryptionByDefault": {"SSEAlgorithm": "AES256"}}]}'
+```
+
+---
+
+## Real-World Use Case
+
+A data analytics company:
+- Uploads 10,000+ logs per day from IoT devices.
+- Enables versioning so that deletions/overwrites can be recovered during audits or investigations.
+- Applies a lifecycle policy so logs are moved to Glacier after 30 days and permanently deleted after 1 year.
+- Uses S3 Standard for incoming logs, and Glacier/Deep Archive for historical compliance.
+- Enforces encryption and limits access through strict IAM and bucket policies.
+- Runs Athena queries directly on the latest log data.
+
+---
+
+## Summary
+Amazon S3 provides industry-leading scalability, data availability, security, and performance. With versioning and lifecycle management, you can optimize storage cost, maintain compliance, and ensure data durability for all your cloud workloads.
