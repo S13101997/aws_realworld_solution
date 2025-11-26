@@ -1,0 +1,1801 @@
+# Amazon VPC (Virtual Private Cloud) — Subnets, Route Tables, IGW, NAT Gateway, VPC Endpoints
+
+## Complete Guide with Examples and Interview Questions
+
+---
+
+## Table of Contents
+1. [Overview](#overview)
+2. [VPC Fundamentals](#vpc-fundamentals)
+3. [Subnets](#subnets)
+4. [Internet Gateway (IGW)](#internet-gateway-igw)
+5. [Route Tables](#route-tables)
+6. [NAT Gateway](#nat-gateway)
+7. [VPC Endpoints](#vpc-endpoints)
+8. [Step-by-Step Examples](#step-by-step-examples)
+9. [Network Security](#network-security)
+10. [Real-World Architectures](#real-world-architectures)
+11. [Best Practices](#best-practices)
+12. [Top 5 Interview Questions](#top-5-interview-questions)
+
+---
+
+## Overview
+
+Amazon VPC (Virtual Private Cloud) is a service that lets you launch AWS resources in a logically isolated virtual network that you define. You have complete control over your virtual networking environment, including selection of IP address range, creation of subnets, and configuration of route tables and network gateways.
+
+**Key Characteristics:**
+- **Isolated network** - Complete control over network environment
+- **Custom IP addressing** - CIDR block (Classless Inter-Domain Routing)
+- **Subnets** - Divide VPC into smaller networks
+- **Internet connectivity** - Connect to internet via IGW or NAT
+- **Private endpoints** - Securely access AWS services
+- **Security** - Security groups and NACLs for traffic control
+- **High availability** - Multi-AZ deployment options
+- **Scalable** - Grow from small to large deployments
+
+**VPC Components:**
+- VPC (Virtual network)
+- Subnets (Network divisions)
+- Internet Gateway (Internet access)
+- Route Tables (Traffic routing)
+- NAT Gateway (Outbound access from private subnets)
+- VPC Endpoints (Private service access)
+- Security Groups (Stateful firewall)
+- NACLs (Stateless firewall)
+
+---
+
+## VPC Fundamentals
+
+### 1. VPC Creation
+
+```bash
+# Create VPC with CIDR block
+aws ec2 create-vpc \
+  --cidr-block 10.0.0.0/16 \
+  --tag-specifications 'ResourceType=vpc,Tags=[{Key=Name,Value=production-vpc}]'
+
+# Output:
+# VPC ID: vpc-12345678
+# CIDR Block: 10.0.0.0/16
+# State: Available
+
+# Enable DNS hostnames
+aws ec2 modify-vpc-attribute \
+  --vpc-id vpc-12345678 \
+  --enable-dns-hostnames
+
+# Enable DNS resolution
+aws ec2 modify-vpc-attribute \
+  --vpc-id vpc-12345678 \
+  --enable-dns-support
+
+# Describe VPC
+aws ec2 describe-vpcs \
+  --vpc-ids vpc-12345678
+```
+
+### 2. CIDR Block Breakdown
+
+```
+CIDR Notation: 10.0.0.0/16
+
+IP Format:
+- 10.0.0.0 = Network address
+- /16 = Prefix length (number of bits for network)
+  - Remaining bits (32-16=16) for host addresses
+  - Total IPs: 2^16 = 65,536
+  - Usable IPs: 65,536 - 5 (AWS reserved) = 65,531
+
+AWS Reserved IPs in each CIDR:
+- .0 = Network address
+- .1 = VPC router
+- .2 = DNS
+- .3 = Future use
+- .255 = Broadcast
+
+Example for 10.0.0.0/16:
+- Total: 65,536 IPs
+- Reserved: 5 IPs per subnet
+- Usable: 65,531 IPs
+
+Common CIDR Blocks:
+- 10.0.0.0/8 (large: 16.7M IPs)
+- 10.0.0.0/16 (medium: 65K IPs)
+- 10.0.0.0/24 (small: 256 IPs)
+- 172.16.0.0/12 (private range)
+- 192.168.0.0/16 (private range)
+```
+
+### 3. VPC Endpoints vs NAT Gateway
+
+| Aspect | VPC Endpoint | NAT Gateway |
+|--------|-------------|------------|
+| Purpose | AWS service access | Internet access |
+| Cost | Free or $7.20/month | $32/month + data |
+| Location | Within VPC | In public subnet |
+| Traffic | Private | Through NAT |
+| Services | S3, DynamoDB, SNS | Internet (HTTP/HTTPS) |
+| HA | Redundant by default | Single point |
+
+---
+
+## Subnets
+
+### 1. Public Subnet
+
+**Definition:** Subnet with route to Internet Gateway
+
+```bash
+# Create public subnet
+aws ec2 create-subnet \
+  --vpc-id vpc-12345678 \
+  --cidr-block 10.0.1.0/24 \
+  --availability-zone us-east-1a \
+  --tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=public-subnet-1a}]'
+
+# Output: Subnet ID: subnet-public-1a
+
+# Characteristics:
+# - CIDR: 10.0.1.0/24 (256 IPs, 251 usable)
+# - IPs: 10.0.1.0 - 10.0.1.255
+# - Usable: 10.0.1.1 - 10.0.1.254 (251 addresses)
+# - Reserved: .0, .1, .2, .3, .255
+
+# Create public route table
+aws ec2 create-route-table \
+  --vpc-id vpc-12345678 \
+  --tag-specifications 'ResourceType=route-table,Tags=[{Key=Name,Value=public-rt}]'
+
+# Create Internet Gateway
+aws ec2 create-internet-gateway \
+  --tag-specifications 'ResourceType=internet-gateway,Tags=[{Key=Name,Value=igw-prod}]'
+
+# Attach IGW to VPC
+aws ec2 attach-internet-gateway \
+  --internet-gateway-id igw-12345678 \
+  --vpc-id vpc-12345678
+
+# Add route to IGW
+aws ec2 create-route \
+  --route-table-id rtb-12345678 \
+  --destination-cidr-block 0.0.0.0/0 \
+  --gateway-id igw-12345678
+
+# Associate route table with subnet
+aws ec2 associate-route-table \
+  --subnet-id subnet-public-1a \
+  --route-table-id rtb-12345678
+
+# Enable auto-assign public IP
+aws ec2 modify-subnet-attribute \
+  --subnet-id subnet-public-1a \
+  --map-public-ip-on-launch
+```
+
+### 2. Private Subnet
+
+**Definition:** Subnet without direct route to Internet Gateway
+
+```bash
+# Create private subnet
+aws ec2 create-subnet \
+  --vpc-id vpc-12345678 \
+  --cidr-block 10.0.2.0/24 \
+  --availability-zone us-east-1a \
+  --tag-specifications 'ResourceType=subnet,Tags=[{Key=Name,Value=private-subnet-1a}]'
+
+# Create NAT Gateway
+# First create Elastic IP
+ALLOCATION_ID=$(aws ec2 allocate-address \
+  --domain vpc \
+  --query 'AllocationId' \
+  --output text)
+
+# Create NAT Gateway in public subnet
+aws ec2 create-nat-gateway \
+  --subnet-id subnet-public-1a \
+  --allocation-id $ALLOCATION_ID \
+  --tag-specifications 'ResourceType=nat-gateway,Tags=[{Key=Name,Value=nat-prod}]'
+
+# Create private route table
+aws ec2 create-route-table \
+  --vpc-id vpc-12345678 \
+  --tag-specifications 'ResourceType=route-table,Tags=[{Key=Name,Value=private-rt}]'
+
+# Add route to NAT Gateway
+aws ec2 create-route \
+  --route-table-id rtb-private \
+  --destination-cidr-block 0.0.0.0/0 \
+  --nat-gateway-id nat-12345678
+
+# Associate route table with private subnet
+aws ec2 associate-route-table \
+  --subnet-id subnet-private-1a \
+  --route-table-id rtb-private
+
+# Do NOT enable auto-assign public IP (stays private)
+```
+
+### 3. Subnet Sizing
+
+```
+Subnet CIDR Planning:
+
+VPC: 10.0.0.0/16 (65,536 IPs)
+
+Option A - Large subnets:
+- Public-1a: 10.0.0.0/21 (2,048 IPs)
+- Public-1b: 10.0.8.0/21 (2,048 IPs)
+- Private-1a: 10.0.16.0/21 (2,048 IPs)
+- Private-1b: 10.0.24.0/21 (2,048 IPs)
+- Database-1a: 10.0.32.0/21 (2,048 IPs)
+- Database-1b: 10.0.40.0/21 (2,048 IPs)
+
+Option B - Medium subnets:
+- Public-1a: 10.0.0.0/24 (256 IPs)
+- Public-1b: 10.0.1.0/24 (256 IPs)
+- Private-1a: 10.0.10.0/24 (256 IPs)
+- Private-1b: 10.0.11.0/24 (256 IPs)
+- Database-1a: 10.0.20.0/24 (256 IPs)
+- Database-1b: 10.0.21.0/24 (256 IPs)
+
+Best Practice:
+- Allocate more than needed
+- Reserve space for growth
+- Plan for multi-AZ
+- Allow room for future applications
+```
+
+---
+
+## Internet Gateway (IGW)
+
+### 1. IGW Configuration
+
+```bash
+# Create IGW
+IGW_ID=$(aws ec2 create-internet-gateway \
+  --tag-specifications 'ResourceType=internet-gateway,Tags=[{Key=Name,Value=igw-prod}]' \
+  --query 'InternetGateway.InternetGatewayId' \
+  --output text)
+
+echo "IGW ID: $IGW_ID"
+
+# Attach to VPC
+aws ec2 attach-internet-gateway \
+  --internet-gateway-id $IGW_ID \
+  --vpc-id vpc-12345678
+
+# Verify attachment
+aws ec2 describe-internet-gateways \
+  --internet-gateway-ids $IGW_ID
+
+# Detach (if needed)
+aws ec2 detach-internet-gateway \
+  --internet-gateway-id $IGW_ID \
+  --vpc-id vpc-12345678
+
+# Delete (after detaching)
+aws ec2 delete-internet-gateway \
+  --internet-gateway-id $IGW_ID
+```
+
+### 2. How IGW Works
+
+```
+Internet Gateway Flow:
+
+Public Instance to Internet:
+1. EC2 instance: 10.0.1.100 (private)
+2. IGW creates NAT: 10.0.1.100 ↔ 54.123.45.67 (public)
+3. Internet sees traffic from: 54.123.45.67
+4. Return traffic routed back to: 10.0.1.100
+
+Route to Internet:
+- Destination: 0.0.0.0/0 (all IPs)
+- Target: Internet Gateway ID
+- Result: Internet-routable IPs can reach internet
+
+Key Points:
+- IGW is ONE per VPC (you can only attach one)
+- Bidirectional traffic (in/out)
+- Automatically handles NAT translation
+- No additional cost
+- Used for public subnets ONLY
+```
+
+### 3. IGW vs NAT Gateway
+
+```
+Internet Gateway (IGW):
+- Attached to VPC
+- Public subnets use IGW
+- Bidirectional (in/out)
+- No cost
+- All EC2 instances need public IP or Elastic IP
+
+NAT Gateway:
+- Deployed in public subnet
+- Private subnets use NAT Gateway
+- Outbound only (instances can access internet)
+- $0.045/hour + data transfer costs
+- No inbound internet access needed
+- High availability: Create one per AZ
+```
+
+---
+
+## Route Tables
+
+### 1. Route Table Basics
+
+```bash
+# Create route table
+RTB_ID=$(aws ec2 create-route-table \
+  --vpc-id vpc-12345678 \
+  --tag-specifications 'ResourceType=route-table,Tags=[{Key=Name,Value=custom-rt}]' \
+  --query 'RouteTable.RouteTableId' \
+  --output text)
+
+echo "Route Table ID: $RTB_ID"
+
+# Add route to Internet Gateway
+aws ec2 create-route \
+  --route-table-id $RTB_ID \
+  --destination-cidr-block 0.0.0.0/0 \
+  --gateway-id igw-12345678
+
+# Add route to NAT Gateway
+aws ec2 create-route \
+  --route-table-id $RTB_ID \
+  --destination-cidr-block 0.0.0.0/0 \
+  --nat-gateway-id nat-12345678
+
+# Add route to VPN connection
+aws ec2 create-route \
+  --route-table-id $RTB_ID \
+  --destination-cidr-block 192.168.0.0/16 \
+  --gateway-id vgw-12345678
+
+# Add route to network interface
+aws ec2 create-route \
+  --route-table-id $RTB_ID \
+  --destination-cidr-block 10.1.0.0/16 \
+  --network-interface-id eni-12345678
+
+# List routes
+aws ec2 describe-route-tables \
+  --route-table-ids $RTB_ID
+
+# Associate with subnet
+aws ec2 associate-route-table \
+  --route-table-id $RTB_ID \
+  --subnet-id subnet-12345678
+
+# Disassociate from subnet
+aws ec2 disassociate-route-table \
+  --association-id rtbassoc-12345678
+
+# Delete route
+aws ec2 delete-route \
+  --route-table-id $RTB_ID \
+  --destination-cidr-block 0.0.0.0/0
+
+# Delete route table (must disassociate first)
+aws ec2 delete-route-table \
+  --route-table-id $RTB_ID
+```
+
+### 2. Route Priority (Most Specific Wins)
+
+```
+Route Table Example:
+
+Destination          Target              Priority
+─────────────────────────────────────────────────
+10.0.0.0/16         Local               1 (highest - VPC traffic)
+10.1.0.0/16         vpn-12345678        2 (specific route)
+0.0.0.0/0           igw-12345678        3 (default route - catch-all)
+
+When traffic goes to 10.1.5.0:
+1. Check 10.0.0.0/16 (VPC) - NO match
+2. Check 10.1.0.0/16 (VPN) - YES match → Use VPN
+3. Ignore 0.0.0.0/0 (already matched)
+
+Result: Uses most specific route (longest prefix match)
+
+Example Traffic Routing:
+
+Traffic to 10.0.2.100:
+- Matches 10.0.0.0/16 (Local)
+- Goes to local network only
+- No internet access needed
+
+Traffic to 10.1.50.100:
+- Matches 10.1.0.0/16 (VPN)
+- Goes through VPN gateway
+- Reaches on-premises datacenter
+
+Traffic to 8.8.8.8 (Google DNS):
+- No specific match for 8.8.0.0/16
+- Matches 0.0.0.0/0 (default)
+- Goes to IGW (if public subnet) or NAT (if private)
+```
+
+### 3. Route Table Example Scenarios
+
+```bash
+# Scenario 1: Public Subnet Route Table
+aws ec2 create-route-table --vpc-id vpc-prod
+# Routes:
+# - 10.0.0.0/16 → Local
+# - 0.0.0.0/0 → igw-xxx (internet access)
+
+# Scenario 2: Private Subnet Route Table
+# Routes:
+# - 10.0.0.0/16 → Local
+# - 0.0.0.0/0 → nat-xxx (outbound only)
+
+# Scenario 3: Database Subnet Route Table (isolated)
+# Routes:
+# - 10.0.0.0/16 → Local
+# - (no internet routes)
+
+# Scenario 4: Hybrid Subnet (with VPN)
+# Routes:
+# - 10.0.0.0/16 → Local
+# - 192.168.0.0/16 → vpn-xxx (on-premises)
+# - 0.0.0.0/0 → igw-xxx (internet)
+```
+
+---
+
+## NAT Gateway
+
+### 1. NAT Gateway Setup
+
+```bash
+# Step 1: Create Elastic IP in public subnet
+EIP=$(aws ec2 allocate-address \
+  --domain vpc \
+  --tag-specifications 'ResourceType=elastic-ip,Tags=[{Key=Name,Value=nat-eip}]' \
+  --query 'AllocationId' \
+  --output text)
+
+echo "Elastic IP: $EIP"
+
+# Step 2: Create NAT Gateway (MUST be in public subnet)
+NAT_GW=$(aws ec2 create-nat-gateway \
+  --subnet-id subnet-public-1a \
+  --allocation-id $EIP \
+  --tag-specifications 'ResourceType=nat-gateway,Tags=[{Key=Name,Value=nat-prod}]' \
+  --query 'NatGateway.NatGatewayId' \
+  --output text)
+
+echo "NAT Gateway: $NAT_GW"
+
+# Wait for NAT Gateway to be available
+aws ec2 wait nat-gateway-available \
+  --nat-gateway-ids $NAT_GW
+
+# Step 3: Create route in private subnet route table
+aws ec2 create-route \
+  --route-table-id rtb-private \
+  --destination-cidr-block 0.0.0.0/0 \
+  --nat-gateway-id $NAT_GW
+
+# Verify
+aws ec2 describe-nat-gateways \
+  --nat-gateway-ids $NAT_GW
+
+# Monitor NAT Gateway (watch data transfer)
+aws cloudwatch get-metric-statistics \
+  --namespace AWS/NatGateway \
+  --metric-name BytesOutToDestination \
+  --dimensions Name=NatGatewayId,Value=$NAT_GW \
+  --statistics Sum \
+  --start-time 2025-11-25T00:00:00Z \
+  --end-time 2025-11-26T00:00:00Z \
+  --period 3600
+```
+
+### 2. NAT Gateway High Availability
+
+```bash
+# Create NAT Gateway in each AZ for HA
+
+# AZ 1a: Public Subnet
+EIP_1A=$(aws ec2 allocate-address --domain vpc --query 'AllocationId' --output text)
+NAT_1A=$(aws ec2 create-nat-gateway \
+  --subnet-id subnet-public-1a \
+  --allocation-id $EIP_1A \
+  --query 'NatGateway.NatGatewayId' \
+  --output text)
+
+# AZ 1b: Public Subnet
+EIP_1B=$(aws ec2 allocate-address --domain vpc --query 'AllocationId' --output text)
+NAT_1B=$(aws ec2 create-nat-gateway \
+  --subnet-id subnet-public-1b \
+  --allocation-id $EIP_1B \
+  --query 'NatGateway.NatGatewayId' \
+  --output text)
+
+# Private subnet 1a: Route to NAT 1a
+aws ec2 create-route \
+  --route-table-id rtb-private-1a \
+  --destination-cidr-block 0.0.0.0/0 \
+  --nat-gateway-id $NAT_1A
+
+# Private subnet 1b: Route to NAT 1b
+aws ec2 create-route \
+  --route-table-id rtb-private-1b \
+  --destination-cidr-block 0.0.0.0/0 \
+  --nat-gateway-id $NAT_1B
+
+# Benefits:
+# - If NAT 1a fails, 1a subnet traffic still routes locally
+# - Better data transfer (inter-AZ cheaper than NAT)
+# - Better throughput (each NAT handles own AZ)
+```
+
+### 3. NAT Gateway vs NAT Instance
+
+| Aspect | NAT Gateway | NAT Instance |
+|--------|------------|--------------|
+| AWS-managed | Yes | No (you manage EC2) |
+| HA | Automatic (redundant) | Manual (Multi-AZ) |
+| Bandwidth | Up to 100 Gbps | Limited by EC2 type |
+| Cost | $32/month + data | EC2 instance cost |
+| Maintenance | None | You maintain |
+| Failover | Automatic | Manual |
+| Security Group | N/A | You configure |
+| Performance | Better | Less predictable |
+
+---
+
+## VPC Endpoints
+
+### 1. Gateway Endpoints
+
+**Services:** S3, DynamoDB
+
+```bash
+# Create S3 Gateway Endpoint
+aws ec2 create-vpc-endpoint \
+  --vpc-id vpc-12345678 \
+  --service-name com.amazonaws.us-east-1.s3 \
+  --route-table-ids rtb-12345678 \
+  --vpc-endpoint-type Gateway
+
+# Output: vpc-endpoint-id vpc-ep-12345678
+
+# Example use cases:
+# - Private EC2 → S3 (no internet needed)
+# - Download large files without NAT Gateway cost
+# - Enhanced security (traffic stays within AWS)
+
+# Create DynamoDB Gateway Endpoint
+aws ec2 create-vpc-endpoint \
+  --vpc-id vpc-12345678 \
+  --service-name com.amazonaws.us-east-1.dynamodb \
+  --route-table-ids rtb-private-1a rtb-private-1b
+
+# Verify endpoint
+aws ec2 describe-vpc-endpoints \
+  --vpc-endpoint-ids vpc-ep-12345678
+
+# Update route table for endpoint
+aws ec2 modify-vpc-endpoint \
+  --vpc-endpoint-id vpc-ep-12345678 \
+  --route-table-ids rtb-12345678 rtb-67890123
+```
+
+### 2. Interface Endpoints
+
+**Services:** SNS, SQS, Kinesis, EC2, Lambda, CloudWatch, Secrets Manager, etc.
+
+```bash
+# Create Interface Endpoint (SNS example)
+aws ec2 create-vpc-endpoint \
+  --vpc-id vpc-12345678 \
+  --vpc-endpoint-type Interface \
+  --service-name com.amazonaws.us-east-1.sns \
+  --subnet-ids subnet-private-1a subnet-private-1b \
+  --security-group-ids sg-12345678
+
+# Output:
+# vpc-endpoint-id: vpc-ep-12345678
+# Network interfaces created automatically
+# Private IP assigned (10.0.x.x)
+# DNS name provided
+
+# List available services
+aws ec2 describe-vpc-endpoint-services \
+  --query 'ServiceNames' | head -20
+
+# Verify interface endpoint
+aws ec2 describe-vpc-endpoints \
+  --vpc-endpoint-ids vpc-ep-12345678
+
+# Use endpoint in application
+# Default SNS endpoint: https://sns.us-east-1.amazonaws.com
+# VPC Endpoint: https://vpce-12345678.sns.us-east-1.vpce.amazonaws.com
+# Or use: https://sns.us-east-1.amazonaws.com (AWS uses endpoint automatically)
+```
+
+### 3. Endpoint Policy
+
+```bash
+# Create S3 endpoint with policy (restrict to specific bucket)
+cat > s3-endpoint-policy.json << 'EOF'
+{
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": "*",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::production-bucket/*"
+      ]
+    }
+  ]
+}
+EOF
+
+aws ec2 create-vpc-endpoint \
+  --vpc-id vpc-12345678 \
+  --service-name com.amazonaws.us-east-1.s3 \
+  --route-table-ids rtb-12345678 \
+  --policy-document file://s3-endpoint-policy.json
+
+# Benefits of endpoint policy:
+# - Restrict which AWS services can access
+# - Control which buckets/resources
+# - Security through principle of least privilege
+```
+
+### 4. Gateway vs Interface Endpoints
+
+| Aspect | Gateway Endpoint | Interface Endpoint |
+|--------|-----------------|-------------------|
+| Services | S3, DynamoDB | Most AWS services |
+| Type | Automatic routing | Requires DNS/IP |
+| Cost | Free | $7.20/month + data |
+| Where deployed | Route table entry | ENI in subnet |
+| DNS | Automatic | Custom DNS entry |
+| Security Group | N/A | Yes (required) |
+| Availability | Automatic HA | Multi-AZ capable |
+
+---
+
+## Step-by-Step Examples
+
+### Example 1: Complete VPC with Public and Private Subnets
+
+#### Step 1: Create VPC and Core Resources
+
+```bash
+#!/bin/bash
+set -e
+
+# Variables
+VPC_CIDR="10.0.0.0/16"
+PUBLIC_SUBNET_CIDR="10.0.1.0/24"
+PRIVATE_SUBNET_CIDR="10.0.2.0/24"
+REGION="us-east-1"
+AZ="us-east-1a"
+
+echo "=== Creating VPC ==="
+VPC=$(aws ec2 create-vpc \
+  --cidr-block $VPC_CIDR \
+  --tag-specifications "ResourceType=vpc,Tags=[{Key=Name,Value=production-vpc}]" \
+  --query 'Vpc.VpcId' \
+  --output text)
+echo "VPC Created: $VPC"
+
+# Enable DNS
+aws ec2 modify-vpc-attribute --vpc-id $VPC --enable-dns-hostnames
+aws ec2 modify-vpc-attribute --vpc-id $VPC --enable-dns-support
+
+echo "=== Creating Subnets ==="
+# Public Subnet
+PUBLIC_SUBNET=$(aws ec2 create-subnet \
+  --vpc-id $VPC \
+  --cidr-block $PUBLIC_SUBNET_CIDR \
+  --availability-zone $AZ \
+  --tag-specifications "ResourceType=subnet,Tags=[{Key=Name,Value=public-subnet}]" \
+  --query 'Subnet.SubnetId' \
+  --output text)
+echo "Public Subnet: $PUBLIC_SUBNET"
+
+# Private Subnet
+PRIVATE_SUBNET=$(aws ec2 create-subnet \
+  --vpc-id $VPC \
+  --cidr-block $PRIVATE_SUBNET_CIDR \
+  --availability-zone $AZ \
+  --tag-specifications "ResourceType=subnet,Tags=[{Key=Name,Value=private-subnet}]" \
+  --query 'Subnet.SubnetId' \
+  --output text)
+echo "Private Subnet: $PRIVATE_SUBNET"
+
+echo "=== Creating Internet Gateway ==="
+IGW=$(aws ec2 create-internet-gateway \
+  --tag-specifications "ResourceType=internet-gateway,Tags=[{Key=Name,Value=igw-prod}]" \
+  --query 'InternetGateway.InternetGatewayId' \
+  --output text)
+echo "IGW: $IGW"
+
+aws ec2 attach-internet-gateway --internet-gateway-id $IGW --vpc-id $VPC
+
+echo "=== Creating Route Tables ==="
+# Public Route Table
+PUBLIC_RT=$(aws ec2 create-route-table \
+  --vpc-id $VPC \
+  --tag-specifications "ResourceType=route-table,Tags=[{Key=Name,Value=public-rt}]" \
+  --query 'RouteTable.RouteTableId' \
+  --output text)
+echo "Public Route Table: $PUBLIC_RT"
+
+# Add route to IGW
+aws ec2 create-route \
+  --route-table-id $PUBLIC_RT \
+  --destination-cidr-block 0.0.0.0/0 \
+  --gateway-id $IGW
+
+# Associate public subnet
+aws ec2 associate-route-table \
+  --route-table-id $PUBLIC_RT \
+  --subnet-id $PUBLIC_SUBNET
+
+# Enable auto-assign public IP
+aws ec2 modify-subnet-attribute \
+  --subnet-id $PUBLIC_SUBNET \
+  --map-public-ip-on-launch
+
+echo "=== Creating NAT Gateway ==="
+# Allocate Elastic IP
+EIP=$(aws ec2 allocate-address \
+  --domain vpc \
+  --tag-specifications "ResourceType=elastic-ip,Tags=[{Key=Name,Value=nat-eip}]" \
+  --query 'AllocationId' \
+  --output text)
+echo "Elastic IP: $EIP"
+
+# Create NAT Gateway
+NAT=$(aws ec2 create-nat-gateway \
+  --subnet-id $PUBLIC_SUBNET \
+  --allocation-id $EIP \
+  --tag-specifications "ResourceType=nat-gateway,Tags=[{Key=Name,Value=nat-prod}]" \
+  --query 'NatGateway.NatGatewayId' \
+  --output text)
+echo "NAT Gateway: $NAT"
+
+# Wait for NAT to be available
+aws ec2 wait nat-gateway-available --nat-gateway-ids $NAT
+
+# Private Route Table
+PRIVATE_RT=$(aws ec2 create-route-table \
+  --vpc-id $VPC \
+  --tag-specifications "ResourceType=route-table,Tags=[{Key=Name,Value=private-rt}]" \
+  --query 'RouteTable.RouteTableId' \
+  --output text)
+echo "Private Route Table: $PRIVATE_RT"
+
+# Add route to NAT
+aws ec2 create-route \
+  --route-table-id $PRIVATE_RT \
+  --destination-cidr-block 0.0.0.0/0 \
+  --nat-gateway-id $NAT
+
+# Associate private subnet
+aws ec2 associate-route-table \
+  --route-table-id $PRIVATE_RT \
+  --subnet-id $PRIVATE_SUBNET
+
+echo "=== VPC Setup Complete ==="
+echo "VPC: $VPC"
+echo "Public Subnet: $PUBLIC_SUBNET (Route via IGW)"
+echo "Private Subnet: $PRIVATE_SUBNET (Route via NAT)"
+echo "Internet Gateway: $IGW"
+echo "NAT Gateway: $NAT"
+```
+
+#### Step 2: Deploy EC2 Instances
+
+```bash
+# Get latest Amazon Linux AMI
+AMI=$(aws ec2 describe-images \
+  --owners amazon \
+  --filters "Name=name,Values=amzn2-ami-hvm-*-x86_64-gp2" \
+  --query 'Images | sort_by(@, &CreationDate) | [-1].ImageId' \
+  --output text)
+
+# Create security group for public instance
+PUBLIC_SG=$(aws ec2 create-security-group \
+  --group-name public-sg \
+  --description "Security group for public instances" \
+  --vpc-id $VPC \
+  --query 'GroupId' \
+  --output text)
+
+# Allow SSH from anywhere (restrict in production)
+aws ec2 authorize-security-group-ingress \
+  --group-id $PUBLIC_SG \
+  --protocol tcp \
+  --port 22 \
+  --cidr 0.0.0.0/0
+
+# Allow HTTP/HTTPS
+aws ec2 authorize-security-group-ingress \
+  --group-id $PUBLIC_SG \
+  --protocol tcp \
+  --port 80 \
+  --cidr 0.0.0.0/0
+
+aws ec2 authorize-security-group-ingress \
+  --group-id $PUBLIC_SG \
+  --protocol tcp \
+  --port 443 \
+  --cidr 0.0.0.0/0
+
+# Launch public EC2 instance
+PUBLIC_INSTANCE=$(aws ec2 run-instances \
+  --image-id $AMI \
+  --instance-type t3.micro \
+  --subnet-id $PUBLIC_SUBNET \
+  --security-group-ids $PUBLIC_SG \
+  --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=public-instance}]" \
+  --query 'Instances[0].InstanceId' \
+  --output text)
+
+echo "Public Instance: $PUBLIC_INSTANCE"
+
+# Create security group for private instance
+PRIVATE_SG=$(aws ec2 create-security-group \
+  --group-name private-sg \
+  --description "Security group for private instances" \
+  --vpc-id $VPC \
+  --query 'GroupId' \
+  --output text)
+
+# Allow SSH from public subnet only
+aws ec2 authorize-security-group-ingress \
+  --group-id $PRIVATE_SG \
+  --protocol tcp \
+  --port 22 \
+  --cidr 10.0.1.0/24
+
+# Launch private EC2 instance
+PRIVATE_INSTANCE=$(aws ec2 run-instances \
+  --image-id $AMI \
+  --instance-type t3.micro \
+  --subnet-id $PRIVATE_SUBNET \
+  --security-group-ids $PRIVATE_SG \
+  --tag-specifications "ResourceType=instance,Tags=[{Key=Name,Value=private-instance}]" \
+  --query 'Instances[0].InstanceId' \
+  --output text)
+
+echo "Private Instance: $PRIVATE_INSTANCE"
+```
+
+---
+
+### Example 2: VPC Endpoints for S3 and DynamoDB
+
+```bash
+# Create S3 Gateway Endpoint
+S3_ENDPOINT=$(aws ec2 create-vpc-endpoint \
+  --vpc-id $VPC \
+  --service-name com.amazonaws.$REGION.s3 \
+  --route-table-ids $PRIVATE_RT \
+  --vpc-endpoint-type Gateway \
+  --query 'VpcEndpoint.VpcEndpointId' \
+  --output text)
+
+echo "S3 Endpoint: $S3_ENDPOINT"
+
+# Create endpoint policy for S3 (restrict to specific bucket)
+cat > s3-policy.json << 'EOF'
+{
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": "*",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::my-application-bucket",
+        "arn:aws:s3:::my-application-bucket/*"
+      ]
+    }
+  ]
+}
+EOF
+
+# Create DynamoDB Gateway Endpoint
+DDB_ENDPOINT=$(aws ec2 create-vpc-endpoint \
+  --vpc-id $VPC \
+  --service-name com.amazonaws.$REGION.dynamodb \
+  --route-table-ids $PRIVATE_RT \
+  --vpc-endpoint-type Gateway \
+  --query 'VpcEndpoint.VpcEndpointId' \
+  --output text)
+
+echo "DynamoDB Endpoint: $DDB_ENDPOINT"
+
+# Test access from private instance (via SSH tunnel from public)
+# Private instance can now access S3/DynamoDB without NAT Gateway
+```
+
+---
+
+## Network Security
+
+### 1. Security Groups (Stateful)
+
+```bash
+# Create security group
+SG=$(aws ec2 create-security-group \
+  --group-name app-sg \
+  --description "Security group for application" \
+  --vpc-id $VPC \
+  --query 'GroupId' \
+  --output text)
+
+# Allow inbound traffic (HTTP from anywhere)
+aws ec2 authorize-security-group-ingress \
+  --group-id $SG \
+  --protocol tcp \
+  --port 80 \
+  --cidr 0.0.0.0/0
+
+# Allow inbound SSH from specific CIDR
+aws ec2 authorize-security-group-ingress \
+  --group-id $SG \
+  --protocol tcp \
+  --port 22 \
+  --cidr 203.0.113.0/24
+
+# Allow inbound from another security group
+aws ec2 authorize-security-group-ingress \
+  --group-id $SG \
+  --protocol tcp \
+  --port 443 \
+  --source-group $LOAD_BALANCER_SG
+
+# Outbound: Allow all by default
+# (can restrict if needed)
+
+# Stateful: Response traffic automatically allowed
+# If you allow outbound HTTP, inbound HTTP response is automatic
+```
+
+### 2. NACLs (Network ACLs - Stateless)
+
+```bash
+# Create NACL
+NACL=$(aws ec2 create-network-acl \
+  --vpc-id $VPC \
+  --tag-specifications "ResourceType=network-acl,Tags=[{Key=Name,Value=app-nacl}]" \
+  --query 'NetworkAcl.NetworkAclId' \
+  --output text)
+
+# Inbound rules (must be numbered)
+# Rule 100: Allow HTTP from anywhere
+aws ec2 create-network-acl-entry \
+  --network-acl-id $NACL \
+  --rule-number 100 \
+  --protocol tcp \
+  --port-range From=80,To=80 \
+  --cidr-block 0.0.0.0/0 \
+  --ingress
+
+# Rule 110: Allow HTTPS from anywhere
+aws ec2 create-network-acl-entry \
+  --network-acl-id $NACL \
+  --rule-number 110 \
+  --protocol tcp \
+  --port-range From=443,To=443 \
+  --cidr-block 0.0.0.0/0 \
+  --ingress
+
+# Rule 120: Allow SSH from corporate network
+aws ec2 create-network-acl-entry \
+  --network-acl-id $NACL \
+  --rule-number 120 \
+  --protocol tcp \
+  --port-range From=22,To=22 \
+  --cidr-block 203.0.113.0/24 \
+  --ingress
+
+# Rule 130: Deny all other inbound
+aws ec2 create-network-acl-entry \
+  --network-acl-id $NACL \
+  --rule-number 130 \
+  --protocol -1 \
+  --cidr-block 0.0.0.0/0 \
+  --ingress
+
+# Outbound rules
+# Rule 100: Allow all outbound (ephemeral ports)
+aws ec2 create-network-acl-entry \
+  --network-acl-id $NACL \
+  --rule-number 100 \
+  --protocol -1 \
+  --cidr-block 0.0.0.0/0 \
+  --egress
+
+# Associate with subnet
+aws ec2 associate-network-acl \
+  --network-acl-id $NACL \
+  --subnet-id $PUBLIC_SUBNET
+```
+
+---
+
+## Real-World Architectures
+
+### 1. Three-Tier Application Architecture
+
+```
+                     Internet
+                        |
+                      [IGW]
+                        |
+        ┌───────────────┴───────────────┐
+        |                               |
+    [Web Tier - Public]            [Web Tier - Public]
+    [ALB/EC2]                       [ALB/EC2]
+    10.0.1.0/24                     10.0.2.0/24
+    us-east-1a                      us-east-1b
+        |                               |
+        ├───────────────┬───────────────┤
+        |               |               |
+    [NAT-1a]        [NAT-1b]           |
+    10.0.1.100      10.0.2.100         |
+        |               |               |
+        └───────────────┼───────────────┘
+                        |
+        ┌───────────────┴───────────────┐
+        |                               |
+    [App Tier - Private]          [App Tier - Private]
+    [EC2]                         [EC2]
+    10.0.11.0/24                  10.0.12.0/24
+    us-east-1a                    us-east-1b
+        |                               |
+        └───────────────┬───────────────┘
+                        |
+        ┌───────────────┴───────────────┐
+        |                               |
+    [DB Tier - Private]           [DB Tier - Private]
+    [RDS Multi-AZ]
+    10.0.21.0/24                  10.0.22.0/24
+    us-east-1a                    us-east-1b
+
+Traffic Flow:
+1. User → ALB (public subnet) - IGW route
+2. ALB → App servers (private subnet) - local route
+3. App → Database (private subnet) - local route
+4. App → External API - NAT Gateway route
+```
+
+### 2. Hybrid Architecture with VPN
+
+```
+                AWS VPC
+        ┌────────────────────────┐
+        │                        │
+        │  [Public Subnet]       │
+        │  [NAT Gateway]         │
+        │  [VPN Connection]      │
+        │  10.0.0.0/16           │
+        │                        │
+        │  ┌─────────────────┐   │
+        │  │  [EC2]          │   │
+        │  │ [Private]       │   │
+        │  │ 10.0.1.0/24     │   │
+        │  └─────────────────┘   │
+        │                        │
+        └────────────────────────┘
+               |    ^
+        VPN Connection (Site-to-Site)
+               |    |
+        ┌──────v────┴──────────┐
+        │                      │
+        │  On-Premises Network │
+        │  192.168.0.0/16      │
+        │                      │
+        │  ┌──────────────┐    │
+        │  │[Datacenter]  │    │
+        │  │[Servers]     │    │
+        │  │192.168.0.0   │    │
+        │  └──────────────┘    │
+        │                      │
+        └──────────────────────┘
+
+Routes:
+AWS VPC:
+- 10.0.0.0/16 → Local
+- 192.168.0.0/16 → VPN Gateway
+- 0.0.0.0/0 → IGW (for internet)
+
+On-Premises:
+- 192.168.0.0/16 → Local
+- 10.0.0.0/16 → VPN Gateway
+```
+
+---
+
+## Best Practices
+
+### 1. VPC Design
+
+```bash
+# ✓ DO:
+- Plan IP space before creation (avoid conflicts)
+- Use /16 or /20 VPC CIDR blocks
+- Reserve subnets for growth (don't use full VPC)
+- Create multiple subnets across AZs
+- Use private subnets for databases
+- Enable DNS hostnames and resolution
+- Use descriptive names and tags
+
+# ✗ DON'T:
+- Use overlapping CIDR blocks with other networks
+- Create single subnet for entire VPC
+- Deploy all resources in single AZ
+- Use 0.0.0.0/0 security group rules
+- Leave default VPC if not using it
+```
+
+### 2. Security Best Practices
+
+```bash
+# ✓ Principle of Least Privilege:
+- Allow only necessary inbound traffic
+- Restrict security groups to specific CIDR/ports
+- Use NACLs for subnet-level firewall
+- Separate public/private subnets by tier
+- Use VPC endpoints for AWS services (no NAT needed)
+
+# ✓ Network Monitoring:
+- Enable VPC Flow Logs
+- Monitor NAT Gateway metrics
+- Set CloudWatch alarms for unusual traffic
+- Use security groups as whitelist
+
+# Example: Minimal web server security group
+aws ec2 authorize-security-group-ingress \
+  --group-id $SG \
+  --protocol tcp \
+  --port 80 \
+  --cidr 0.0.0.0/0  # Only HTTP
+
+aws ec2 authorize-security-group-ingress \
+  --group-id $SG \
+  --protocol tcp \
+  --port 443 \
+  --cidr 0.0.0.0/0  # Only HTTPS
+
+# SSH: Restrict to bastion or specific IPs
+aws ec2 authorize-security-group-ingress \
+  --group-id $SG \
+  --protocol tcp \
+  --port 22 \
+  --cidr 203.0.113.0/32  # Only from bastion
+```
+
+### 3. Cost Optimization
+
+```bash
+# ✓ Reduce NAT Gateway costs:
+- Use VPC endpoints for S3/DynamoDB (free)
+- Consolidate NAT Gateways (one per AZ needed)
+- Monitor data transfer costs
+- Use NAT instances for non-critical workloads (if acceptable)
+
+# ✓ Efficient subnet sizing:
+- Don't over-allocate CIDR blocks
+- Plan for growth but avoid waste
+- Monitor subnet utilization
+
+# Cost comparison (per month, us-east-1):
+NAT Gateway (high usage):
+- $32/month (hourly charge)
+- ~$10 data transfer (1TB egress)
+- Total: ~$42/month
+
+VPC Endpoint (S3 + DynamoDB):
+- Gateway endpoints: Free
+- Interface endpoints: $7.20/month each
+- Saves NAT Gateway for external API calls only
+```
+
+---
+
+## Top 5 Interview Questions
+
+### Question 1: Explain VPC Architecture and How Traffic Flows
+
+**Difficulty:** Medium
+
+**The Question:**
+"Design a three-tier VPC architecture with public web servers, private application servers, and a database. Explain how traffic flows from the internet to the database and back, including what components handle NAT."
+
+**Model Answer:**
+
+Architecture:
+```
+Internet → IGW → ALB (Public) → Private App → Private DB
+                    ↓
+              Subnet: 10.0.1.0/24
+              Route: 0.0.0.0/0 → IGW
+              
+App Servers:
+- Subnet: 10.0.10.0/24 (Private)
+- Route: 0.0.0.0/0 → NAT Gateway
+- Can access internet for updates
+- Not directly accessible from internet
+
+Database:
+- Subnet: 10.0.20.0/24 (Private)
+- Route: Local only (no internet access)
+- Security group: Only accepts from app tier
+```
+
+Traffic Flow (Inbound):
+1. **User Request** → Internet (external)
+2. **IGW receives** → Translates public IP to private (54.123.45.67 → 10.0.1.100)
+3. **ALB processes** → Routes to backend app servers
+4. **App servers** → Query database (local route, no NAT needed)
+5. **Database** → Returns data
+
+Traffic Flow (Outbound):
+1. **App server** → External API call (0.0.0.0/0)
+2. **NAT Gateway** → Translates private IP to Elastic IP
+3. **IGW** → Routes to internet
+4. **External API** → Responds to Elastic IP
+5. **NAT Gateway** → Translates back to private IP
+6. **App server** → Receives response
+
+Key Points:
+- IGW handles bidirectional traffic for public subnets
+- NAT Gateway handles outbound-only for private subnets
+- Database only needs local subnet route (no internet required)
+- Security groups restrict cross-tier access
+
+---
+
+### Question 2: When Would You Use Gateway vs Interface VPC Endpoints?
+
+**Difficulty:** Medium-High
+
+**The Question:**
+"Your application runs in private subnets and needs to access both S3 and SNS. Discuss whether you should use Gateway or Interface endpoints, the cost implications, and how you'd implement both."
+
+**Model Answer:**
+
+**S3 Access → Use Gateway Endpoint:**
+```
+Benefits:
+- Free (no additional cost)
+- Automatic routing (no DNS configuration)
+- Higher throughput (~100 Gbps)
+- Simpler to implement
+
+Implementation:
+1. Create Gateway endpoint for S3
+2. Automatically added to route tables
+3. Instances use standard S3 endpoint
+4. Aws handles routing transparently
+
+Cost Comparison:
+- Without endpoint: EC2 → NAT → IGW → S3
+  Monthly cost: $32 NAT + $10 data transfer = $42+
+- With endpoint: EC2 → S3 (free)
+  Monthly cost: $0
+  
+Savings: ~$42/month per NAT Gateway
+```
+
+**SNS Access → Use Interface Endpoint:**
+```
+Why Interface (not Gateway):
+- Gateway only supports S3 and DynamoDB
+- SNS is only available via Interface
+
+Implementation:
+1. Create Interface endpoint for SNS
+2. Specify subnets and security groups
+3. AWS creates ENI with private IP (10.0.x.x)
+4. Applications connect to private IP or DNS name
+5. Traffic stays within VPC
+
+Cost:
+- $7.20/month per endpoint
+- Data processing: ~$0.01 per GB
+
+vs NAT Gateway approach:
+- Without endpoint: EC2 → NAT → IGW → SNS
+  Cost: $32 NAT + data transfer
+- With endpoint: EC2 → Interface → SNS
+  Cost: $7.20 + minimal data cost
+  
+Savings: ~$24/month
+```
+
+**Optimal Solution:**
+```
+Implement both:
+1. Gateway endpoint for S3 (free)
+   - Highest usage typically
+   - No cost savings with interface endpoint
+   
+2. Interface endpoint for SNS ($7.20/month)
+   - Better than NAT path for private subnets
+   - No internet gateway required
+   - Secure (traffic stays in AWS)
+
+Total cost: ~$7.20/month
+vs NAT only approach: ~$42/month + data transfer
+Savings: ~$35/month
+
+Route table:
+- 0.0.0.0/0 → NAT GW (for external APIs only)
+- S3 traffic → S3 Gateway Endpoint
+- SNS traffic → SNS Interface Endpoint
+- DynamoDB → DynamoDB Gateway Endpoint
+```
+
+---
+
+### Question 3: Troubleshoot EC2 Internet Connectivity
+
+**Difficulty:** High
+
+**The Question:**
+"An EC2 instance in a private subnet cannot reach the internet to download software packages. Walk through your troubleshooting steps to identify and fix the issue."
+
+**Model Answer:**
+
+**Systematic Troubleshooting Checklist:**
+
+```
+Step 1: Verify Instance Network Configuration
+└─ Check if instance has ENI in correct subnet
+   aws ec2 describe-instances --instance-ids i-12345678
+   
+   Expected:
+   - SubnetId: subnet-private
+   - PrivateIpAddress: 10.0.x.x
+   - No PublicIpAddress (private subnet)
+
+Step 2: Check Security Group (Instance-level firewall)
+└─ Does security group allow outbound?
+   aws ec2 describe-security-groups --group-ids sg-12345678
+   
+   Expected:
+   - Outbound rules include 0.0.0.0/0 or target (like S3)
+   - Common issue: Default security group might block
+
+   Fix outbound:
+   aws ec2 authorize-security-group-egress \
+     --group-id sg-12345678 \
+     --protocol tcp \
+     --port 443 \
+     --cidr 0.0.0.0/0
+
+Step 3: Check NACL (Subnet-level firewall)
+└─ Does subnet's NACL allow traffic?
+   aws ec2 describe-network-acls \
+     --filters Name=association.subnet-id,Values=subnet-private
+   
+   Expected:
+   - Outbound rule for ports 80/443
+   - Inbound rule for ephemeral ports (1024-65535)
+   
+   If missing:
+   aws ec2 create-network-acl-entry \
+     --network-acl-id acl-12345678 \
+     --rule-number 100 \
+     --protocol tcp \
+     --port-range From=443,To=443 \
+     --cidr-block 0.0.0.0/0 \
+     --egress
+   
+   Also add ephemeral inbound:
+   aws ec2 create-network-acl-entry \
+     --network-acl-id acl-12345678 \
+     --rule-number 110 \
+     --protocol tcp \
+     --port-range From=1024,To=65535 \
+     --cidr-block 0.0.0.0/0 \
+     --ingress
+
+Step 4: Check Route Table (Routing decision)
+└─ Does route table have path to internet?
+   aws ec2 describe-route-tables \
+     --filters Name=association.subnet-id,Values=subnet-private
+   
+   Expected routes:
+   - 10.0.0.0/16 → local (VPC)
+   - 0.0.0.0/0 → nat-12345678 (NAT Gateway)
+   
+   If missing NAT:
+   aws ec2 create-route \
+     --route-table-id rtb-private \
+     --destination-cidr-block 0.0.0.0/0 \
+     --nat-gateway-id nat-12345678
+
+Step 5: Verify NAT Gateway Status
+└─ Is NAT Gateway running and available?
+   aws ec2 describe-nat-gateways \
+     --nat-gateway-ids nat-12345678
+   
+   Expected:
+   - State: available
+   - Not: failed, deleting, pending
+   
+   If failed:
+   - Check Elastic IP allocation
+   - Check NAT Gateway in correct public subnet
+   - May need to recreate
+
+Step 6: Test Connectivity
+└─ From bastion/public instance SSH to private instance
+   ssh -i key.pem ec2-user@10.0.private.ip
+   
+   Once connected, test:
+   ping 8.8.8.8        # ICMP (may fail if blocked)
+   curl https://aws.amazon.com  # HTTPS
+   sudo yum update     # Package install
+
+Common Issues Found:
+───────────────────
+1. Missing outbound rule in security group
+   → Fix: Add 0.0.0.0/0 egress
+
+2. NACL missing ephemeral ports inbound
+   → Fix: Add rule for 1024-65535
+
+3. NAT Gateway not in correct public subnet
+   → Fix: Verify NAT is in public subnet with IGW
+
+4. Route table points to NAT instead of IGW
+   → Fix: Correct route to NAT for private subnets
+
+5. NAT Gateway failed or pending
+   → Fix: Check associated Elastic IP, recreate if needed
+
+6. Incorrect route table associated with subnet
+   → Fix: Associate correct route table
+```
+
+---
+
+### Question 4: Design a Highly Available, Secure Network
+
+**Difficulty:** High
+
+**The Question:**
+"Design a network architecture for a production e-commerce application that must be highly available, secure, and cost-efficient. Include considerations for web tier, application tier, database tier, and external integrations."
+
+**Model Answer:**
+
+```
+PRODUCTION ARCHITECTURE (Multi-AZ HA):
+
+┌─────────────────────────────────────────────────────────────┐
+│                        Internet                              │
+└────────────────┬──────────────────────────────┬──────────────┘
+                 │                              │
+          ┌──────▼──────┐              ┌───────▼────────┐
+          │   IGW-1a    │              │    IGW-1b      │
+          └──────┬──────┘              └────────┬────────┘
+                 │                              │
+    ┌────────────▼──────────┐   ┌───────────────▼──────────────┐
+    │  Public Subnet 1a     │   │   Public Subnet 1b          │
+    │  10.0.1.0/24          │   │   10.0.2.0/24               │
+    │                       │   │                              │
+    │  ┌─────────────────┐  │   │  ┌──────────────────────┐   │
+    │  │  ALB (Primary)  │  │   │  │ ALB (Secondary)      │   │
+    │  │  Listener:      │  │   │  │ Listener:            │   │
+    │  │  80 → 443       │  │   │  │ 80 → 443             │   │
+    │  │  Target Grp:    │  │   │  │ Target Grp:          │   │
+    │  │  App Tier       │  │   │  │ App Tier             │   │
+    │  └─────────────────┘  │   │  └──────────────────────┘   │
+    │                       │   │                              │
+    │  ┌─────────────────┐  │   │  ┌──────────────────────┐   │
+    │  │  NAT Gateway    │  │   │  │ NAT Gateway          │   │
+    │  │  10.0.1.50      │  │   │  │ 10.0.2.50            │   │
+    │  └─────────────────┘  │   │  └──────────────────────┘   │
+    └────────────┬──────────┘   └───────────────┬──────────────┘
+                 │                              │
+    ┌────────────▼──────────┐   ┌───────────────▼──────────────┐
+    │  Private Subnet 1a    │   │  Private Subnet 1b           │
+    │  10.0.11.0/24         │   │  10.0.12.0/24                │
+    │  Route: 0.0.0.0/0 →   │   │  Route: 0.0.0.0/0 →          │
+    │  NAT-1a               │   │  NAT-1b                      │
+    │                       │   │                              │
+    │  ┌─────────────────┐  │   │  ┌──────────────────────┐   │
+    │  │  App Tier EC2   │  │   │  │ App Tier EC2         │   │
+    │  │  Auto Scaling   │  │   │  │ Auto Scaling         │   │
+    │  │  Group: 2-10    │  │   │  │ Group: 2-10          │   │
+    │  └─────────────────┘  │   │  └──────────────────────┘   │
+    │                       │   │                              │
+    └───────────┬───────────┘   └───────────────┬──────────────┘
+                │                               │
+    ┌───────────▼───────────────────────────────▼──────────────┐
+    │              Private DB Tier (Multi-AZ)                   │
+    │              RDS MySQL (Multi-AZ)                         │
+    │              10.0.21.0/24, 10.0.22.0/24                  │
+    │              Route: Local only (no internet)              │
+    │                                                           │
+    │  ┌──────────────────────────────────────────────────┐   │
+    │  │ Primary Instance 1a                              │   │
+    │  │ Secondary Standby 1b (automatic failover)        │   │
+    │  │ Backup Window: 02:00 UTC                         │   │
+    │  │ Retention: 30 days                               │   │
+    │  └──────────────────────────────────────────────────┘   │
+    │                                                          │
+    └──────────────────────────────────────────────────────────┘
+```
+
+**Key Design Decisions:**
+
+1. **Multi-AZ Deployment**
+   - ALB across 2 AZs (automatic failover)
+   - App tier ASG across 2 AZs
+   - RDS Multi-AZ with automatic failover
+
+2. **Isolation & Security**
+   - Public subnets: ALB, NAT Gateway only
+   - Private subnets: Application servers
+   - Database subnets: RDS only, no internet
+   - Security groups: Allow only necessary traffic
+
+3. **Internet Connectivity**
+   - One NAT Gateway per public subnet (HA)
+   - Private instances route through NAT
+   - Outbound for software updates
+   - No inbound from internet
+
+4. **Cost Optimization**
+   - Shared NAT (one per AZ is minimum)
+   - S3 Gateway Endpoint (free): Backups, logs
+   - VPC Endpoints for AWS services: SNS, SQS
+   - RDS Multi-AZ: Worth cost for availability
+
+5. **Database Protection**
+   - Private subnets only
+   - Security group: Only from app tier
+   - No public IP (can't access directly)
+   - Automated backups + snapshots
+
+**Cost Estimate (Monthly, us-east-1):**
+```
+Components:
+- VPC: Free
+- 2 ALBs: $32.40 each = $64.80
+- NAT Gateways: $32 × 2 = $64
+- EC2 instances (ASG): $30-50/month avg
+- RDS Multi-AZ t3.small: $270
+- VPC Endpoints (S3/DynamoDB): Free + $7.20 each for others
+- IGWs: Free
+
+Total: ~$430-450/month (excluding data transfer)
+```
+
+---
+
+### Question 5: Compare NAT Gateway vs Bastion Host
+
+**Difficulty:** Medium-High
+
+**The Question:**
+"Your organization needs private EC2 instances to securely access external services. Should you use a NAT Gateway or deploy a bastion host? Compare the approaches in terms of cost, security, functionality, and use cases."
+
+**Model Answer:**
+
+```
+COMPARISON MATRIX:
+
+Feature                NAT Gateway          Bastion Host
+─────────────────────────────────────────────────────────
+Cost                   $32/month + data     Small EC2 instance
+                                            ~$10/month
+
+Throughput            Up to 100 Gbps        Limited by instance
+                      Automatically HA      Manual HA (complex)
+
+Setup Complexity      Simple (2 clicks)     Medium (more config)
+
+Maintenance          AWS managed           You manage (patching)
+
+Outbound Traffic     Yes (all protocols)   Yes (all protocols)
+
+SSH Access           Only via proxy        Direct SSH tunnel
+
+Use Cases            Most applications     Emergency access,
+                                          locked-down envs
+
+Security             Good (managed)        Excellent (hardened)
+
+Logging/Auditing     CloudWatch Logs       CloudTrail + Logs
+
+─────────────────────────────────────────────────────────
+
+DETAILED COMPARISON:
+
+1. NAT Gateway Approach
+━━━━━━━━━━━━━━━━━━━━━
+Use Case:
+- Standard outbound internet access
+- Software updates, package installs
+- External API calls
+- Cost-conscious organizations
+
+Setup:
+- Create Elastic IP
+- Create NAT Gateway (public subnet)
+- Update route table (0.0.0.0/0 → NAT)
+- Done!
+
+Flow:
+  Private EC2 → NAT GW → IGW → Internet
+  Application makes requests directly
+
+Security:
+  ✓ Instances not accessible from internet
+  ✓ One-way traffic (outbound only)
+  ✓ AWS manages infrastructure
+  ✗ Less visibility into traffic
+  ✗ All outbound traffic goes through NAT
+
+Cost:
+  $32/month + $0.045/GB outbound traffic
+  Example: 100 GB = $32 + $4.50 = $36.50/month
+
+2. Bastion Host (Jump Box) Approach
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Use Case:
+- Controlled administrative access
+- Security-sensitive environments
+- Audit compliance (track who accessed what)
+- SSH proxy to private instances
+
+Setup:
+- Launch EC2 in public subnet (hardened AMI)
+- Configure security groups:
+  * Bastion: Allow SSH from specific IPs
+  * Private instances: Allow SSH from Bastion only
+- Setup SSH key pairs
+- Enable logging
+
+Flow:
+  Admin → SSH to Bastion (public)
+  Bastion → SSH to Private Instance
+  
+  ssh -i key.pem ec2-user@bastion-ip
+  then
+  ssh -i key.pem ec2-user@private-ip
+
+Security:
+  ✓ Excellent logging (every SSH logged)
+  ✓ Controlled access (IP whitelist)
+  ✓ Easy to trace who did what (audit)
+  ✗ Additional EC2 cost
+  ✗ Manual HA setup complex
+  ✗ Bastion is attack surface
+
+Cost:
+  EC2 instance: ~$10-20/month (t3.micro/small)
+  Plus data transfer
+
+RECOMMENDATION BY SCENARIO:
+
+┌─────────────────────────────────────────────────────────┐
+│ Use NAT Gateway When:                                   │
+│                                                         │
+│ • Applications need outbound internet (standard case)   │
+│ • No strict audit requirements                          │
+│ • Multiple instances need internet access               │
+│ • Simplicity and automation preferred                   │
+│ • AWS handles HA automatically                          │
+│                                                         │
+│ Example: E-commerce app needing:                        │
+│ - Payment gateway API calls                             │
+│ - Package updates                                       │
+│ - External service integrations                         │
+│                                                         │
+│ Cost: $32/month + data                                  │
+│ Setup: 5 minutes                                        │
+└─────────────────────────────────────────────────────────┘
+
+┌─────────────────────────────────────────────────────────┐
+│ Use Bastion Host When:                                  │
+│                                                         │
+│ • Strict audit/compliance requirements (HIPAA, SOX)     │
+│ • Need to track who accesses what                       │
+│ • Administrative access to private instances            │
+│ • Security-first organizations                         │
+│ • Want complete control over access                     │
+│                                                         │
+│ Example: Financial/Healthcare apps requiring:           │
+│ - Audit trail of admin access                          │
+│ - IP-based access control                              │
+│ - SSH key rotation policies                            │
+│                                                         │
+│ Cost: $10-20/month (EC2)                               │
+│ Setup: 30 minutes                                       │
+└─────────────────────────────────────────────────────────┘
+
+HYBRID APPROACH (Best Practice):
+─────────────────────────────────
+
+Use BOTH:
+1. NAT Gateway for application traffic
+   - Outbound internet access for apps
+   - Automatic HA
+   - No instance management
+
+2. Bastion Host for admin access
+   - Secure SSH to private instances
+   - Audit logging
+   - Controlled access
+
+Architecture:
+┌──────────────┐
+│  Public     │
+│  ├─ ALB     │
+│  ├─ NAT GW  │
+│  └─ Bastion │ ← Admin access only
+└──────────────┘
+     ↓
+┌──────────────┐
+│  Private    │ ← Outbound via NAT
+│  ├─ App 1   │ ← SSH only from Bastion
+│  ├─ App 2   │
+│  └─ App 3   │
+└──────────────┘
+
+Cost:
+NAT Gateway:    $32/month
+Bastion (small): $10/month
+Total: ~$42/month
+
+Benefits:
+- Applications get internet access via NAT
+- Admins SSH through Bastion (audited)
+- Private instances have NO public IP
+- Complete audit trail
+- Automatic failover for NAT
+```
+
+---
+
+## Summary
+
+Amazon VPC provides:
+- ✅ **Complete network isolation** - Separate virtual networks per region
+- ✅ **Flexible subnetting** - Public and private subnets
+- ✅ **Internet connectivity** - IGW for public, NAT for private
+- ✅ **Secure communication** - VPC endpoints for AWS services
+- ✅ **Routing control** - Custom route tables for traffic
+- ✅ **Security** - Security groups and NACLs
+- ✅ **Multi-AZ capability** - High availability deployment
+- ✅ **Hybrid connectivity** - VPN and Direct Connect options
+
+---
+
+**Last Updated:** November 26, 2025
+**Version:** 1.0
+**Comprehensive Coverage:** All aspects of Amazon VPC with detailed examples, architectures, and top 5 interview questions with model answers.
