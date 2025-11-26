@@ -1,0 +1,1240 @@
+# AWS Backup — Centralized Backup, Compliance and Management
+
+## Complete Guide with Examples and Best Practices
+
+---
+
+## Table of Contents
+1. [Overview](#overview)
+2. [Key Concepts](#key-concepts)
+3. [Supported Services](#supported-services)
+4. [Backup Plans](#backup-plans)
+5. [Recovery Windows and Retention](#recovery-windows-and-retention)
+6. [Backup Vaults](#backup-vaults)
+7. [Step-by-Step Examples](#step-by-step-examples)
+8. [Compliance and Management](#compliance-and-management)
+9. [Cross-Account Backups](#cross-account-backups)
+10. [Real-World Use Cases](#real-world-use-cases)
+11. [Best Practices](#best-practices)
+12. [Troubleshooting](#troubleshooting)
+
+---
+
+## Overview
+
+AWS Backup is a fully managed backup service that makes it easy to centralize and automate the backup of data across AWS services. AWS Backup eliminates the need to create custom backup scripts and manage backup infrastructure, allowing you to focus on your business logic.
+
+**Key Characteristics:**
+- **Centralized management** - Single interface for all AWS backup resources
+- **Automated backups** - Scheduled backup policies for consistency
+- **Cross-service support** - Backup multiple AWS services from one console
+- **Policy-based** - Define backup policies using simple rules
+- **Compliance** - Meet regulatory requirements with automated retention
+- **Cost-effective** - Pay only for data backed up and stored
+- **Cross-region backup** - Replicate backups to different regions for DR
+- **Ransomware protection** - Backup Lock to prevent deletion
+- **Auditing** - Full audit trail of backup activities
+- **Easy recovery** - Restore data quickly with point-in-time recovery
+
+**Key Differences from Native Backup Solutions:**
+- **Service-specific backups:** Each service has own backup mechanism
+- **AWS Backup:** Unified, centralized backup management across services
+
+---
+
+## Key Concepts
+
+### 1. Backup Plan
+- A policy that defines when, how, and how long to retain backups
+- Contains backup rules with schedules and retention policies
+- Can be assigned to resources via tags or resource IDs
+- Example: Daily backups at 5 AM, retain for 30 days
+
+### 2. Backup Rule
+- Individual rule within a backup plan
+- Specifies schedule, retention, and recovery window
+- Can have multiple rules per plan
+- Example: Schedule="Daily at 2 AM", Retention="30 days"
+
+### 3. Backup Vault
+- Container for backups (similar to bucket in S3)
+- Applies encryption and access controls
+- Stores backup metadata and recovery points
+- Example: Production-backups vault, DR-backups vault
+
+### 4. Recovery Point
+- Snapshot of resource at specific point in time
+- Can be used to restore resource
+- Contains backup data and metadata
+- Example: RDS recovery point from 2025-11-25 10:30 AM
+
+### 5. Resource Assignment
+- Links backup plan to resources for protection
+- Can assign by:
+  - Resource tags (TagKey=Value)
+  - Resource IDs (specific resource ARNs)
+  - CloudFormation stack names
+- Example: Tag="Environment=Production" backs up all tagged resources
+
+### 6. On-Demand Backup
+- Manual backup created outside schedule
+- Useful for backups before major changes
+- Follows vault retention policies
+- Example: Backup before database migration
+
+### 7. Backup Lock
+- Prevents backup deletion for compliance
+- Two modes: Governance (can override) and Compliance (cannot override)
+- Meets regulatory requirements (WORM - Write Once Read Many)
+- Example: Cannot delete backup for 7 years (compliance requirement)
+
+### 8. Cross-Region Backup
+- Backup copied to different region automatically
+- Provides disaster recovery capability
+- Separate retention policy per region
+- Example: Primary in us-east-1, DR copy in us-west-2
+
+---
+
+## Supported Services
+
+### Database Services
+- **RDS:** MySQL, PostgreSQL, Aurora, MariaDB, Oracle, SQL Server
+- **DynamoDB:** On-demand and provisioned tables
+- **Amazon Neptune:** Graph database
+- **Amazon DocumentDB:** MongoDB-compatible database
+
+### Storage Services
+- **EBS:** Elastic Block Store volumes
+- **EFS:** Elastic File System (NFS)
+- **Amazon FSx:** Windows File Server and Lustre
+
+### Application Services
+- **AWS AppConfig:** Configuration data
+- **Redshift:** Data warehouse
+- **ElastiCache:** Redis and Memcached
+
+### Business Applications
+- **AWS Backup for AWS Application Migration Service**
+
+### Example Service Matrix:
+
+| Service | Backup | Recovery | Cross-Region |
+|---------|--------|----------|--------------|
+| RDS | ✓ | PITR + Snapshots | ✓ |
+| DynamoDB | ✓ | PITR + On-Demand | ✓ |
+| EBS | ✓ | Snapshots | ✓ |
+| EFS | ✓ | File-level restore | ✓ |
+| Aurora | ✓ | PITR + Snapshots | ✓ |
+| Redshift | ✓ | Snapshots | ✓ |
+
+---
+
+## Backup Plans
+
+### 1. Plan Structure
+
+```json
+{
+  "BackupPlan": {
+    "BackupPlanName": "DailyBackups",
+    "BackupPlanDescription": "Daily backups of production resources",
+    "Rules": [
+      {
+        "RuleName": "DailyRule",
+        "TargetBackupVaultName": "production-vault",
+        "ScheduleExpression": "cron(0 5 ? * * *)",
+        "StartWindowMinutes": 60,
+        "CompletionWindowMinutes": 120,
+        "Lifecycle": {
+          "DeleteAfterDays": 30,
+          "MoveToColdStorageAfterDays": 7
+        },
+        "RecoveryPointTags": {
+          "Backup": "Daily",
+          "Environment": "Production"
+        },
+        "CopyActions": [
+          {
+            "DestinationVaultArn": "arn:aws:backup:us-west-2:123456789012:backup-vault:dr-vault",
+            "Lifecycle": {
+              "DeleteAfterDays": 30
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### 2. Backup Rule Parameters
+
+**Schedule Expression (Cron):**
+```
+cron(0 5 ? * * *)           # Every day at 5 AM UTC
+cron(0 2 ? * MON-FRI *)     # Every weekday at 2 AM UTC
+cron(0 3 ? * 1 *)           # Every Monday at 3 AM UTC
+cron(0 */4 ? * * *)         # Every 4 hours
+cron(0 0 1 * ? *)           # First day of month at midnight
+```
+
+**Retention Policies:**
+```
+DeleteAfterDays: 30         # Delete after 30 days
+MoveToColdStorageAfterDays: 7  # Move to cold storage after 7 days (cheaper)
+MoveToColdStorageAfterDays: 0  # Immediately move to cold storage
+```
+
+### 3. Create Backup Plan via CLI
+
+```bash
+# Create backup plan JSON file
+cat > backup-plan.json << 'EOF'
+{
+  "BackupPlanName": "MyBackupPlan",
+  "BackupPlanDescription": "Automated daily backups",
+  "Rules": [
+    {
+      "RuleName": "DailyBackup",
+      "TargetBackupVaultName": "prod-vault",
+      "ScheduleExpression": "cron(0 5 ? * * *)",
+      "StartWindowMinutes": 60,
+      "CompletionWindowMinutes": 120,
+      "Lifecycle": {
+        "DeleteAfterDays": 30,
+        "MoveToColdStorageAfterDays": 7
+      },
+      "RecoveryPointTags": {
+        "Frequency": "Daily",
+        "Environment": "Production"
+      }
+    }
+  ]
+}
+EOF
+
+# Create the backup plan
+aws backup create-backup-plan \
+  --backup-plan file://backup-plan.json
+
+# Get backup plan details
+aws backup describe-backup-plan \
+  --backup-plan-id 12345678-1234-1234-1234-123456789012
+```
+
+---
+
+## Recovery Windows and Retention
+
+### 1. Cold Storage Lifecycle
+
+**Backup Retention Tiers:**
+```
+Warm Storage (Immediately Accessible)
+├─ Available for rapid recovery
+├─ Higher cost: ~$0.05/GB for RDS, ~$0.023/GB for EBS
+└─ Used for: Recent backups, frequent access
+
+Cold Storage (Archived)
+├─ Available but slower access (hours)
+├─ Lower cost: ~$0.01/GB for RDS, ~$0.004/GB for EBS
+└─ Used for: Long-term retention, compliance, archival
+
+Lifecycle Example:
+Day 1-7:   Warm Storage (frequently accessed)
+Day 8-30:  Cold Storage (compliance retention)
+Day 31:    Deleted
+```
+
+### 2. Recovery Point Lifecycle Configuration
+
+```bash
+# Create plan with cold storage transition
+aws backup create-backup-plan \
+  --backup-plan '{
+    "BackupPlanName": "LongTermRetention",
+    "Rules": [
+      {
+        "RuleName": "MonthlyBackup",
+        "TargetBackupVaultName": "archive-vault",
+        "ScheduleExpression": "cron(0 3 1 * ? *)",
+        "Lifecycle": {
+          "DeleteAfterDays": 2555,
+          "MoveToColdStorageAfterDays": 30
+        }
+      }
+    ]
+  }'
+
+# Archive policy: Move to cold storage immediately after backup
+Lifecycle:
+  DeleteAfterDays: 365
+  MoveToColdStorageAfterDays: 0  # Immediately cold
+```
+
+### 3. Point-in-Time Recovery (PITR)
+
+```bash
+# For RDS with PITR enabled
+aws backup describe-backup-vault \
+  --backup-vault-name prod-vault
+
+# Restore RDS to specific point in time
+aws backup start-restore-job \
+  --recovery-point-arn arn:aws:backup:us-east-1:123456789012:recovery-point:rds-db-abc123 \
+  --iam-role-arn arn:aws:iam::123456789012:role/AWSBackupRole \
+  --metadata '{
+    "availabilityZone": "us-east-1a",
+    "port": "3306"
+  }'
+
+# PITR Window: RDS default 7 days, configurable up to 35 days
+```
+
+---
+
+## Backup Vaults
+
+### 1. Create Backup Vault
+
+```bash
+# Create standard backup vault
+aws backup create-backup-vault \
+  --backup-vault-name production-vault \
+  --encryption-key-arn arn:aws:kms:us-east-1:123456789012:key/12345678-1234-1234-1234-123456789012 \
+  --tags VaultName=ProductionVault,Environment=Prod
+
+# Create vault with access policy
+aws backup put-backup-vault-access-policy \
+  --backup-vault-name production-vault \
+  --policy '{
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Principal": {
+          "AWS": "arn:aws:iam::123456789012:root"
+        },
+        "Action": "backup:*",
+        "Resource": "*"
+      }
+    ]
+  }'
+
+# Create vault with Backup Lock
+aws create-backup-vault-with-backup-lock \
+  --backup-vault-name compliance-vault \
+  --backup-lock-mode COMPLIANCE \
+  --backup-lock-day-count 2555  # 7 years for compliance
+```
+
+### 2. Vault Encryption
+
+```bash
+# All vaults encrypted by default (AWS-managed key)
+# Use customer-managed key for additional control
+
+# Create with custom KMS key
+aws backup create-backup-vault \
+  --backup-vault-name encrypted-vault \
+  --encryption-key-arn arn:aws:kms:us-east-1:123456789012:key/xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+
+# Encryption benefits:
+# - Data encrypted at rest
+# - Only authorized users can decrypt
+# - Audit trail of access
+```
+
+### 3. List and Manage Vaults
+
+```bash
+# List all backup vaults
+aws backup list-backup-vaults
+
+# Describe specific vault
+aws backup describe-backup-vault \
+  --backup-vault-name production-vault
+
+# List recovery points in vault
+aws backup list-recovery-points-by-backup-vault \
+  --backup-vault-name production-vault \
+  --by-resource-type RDS
+
+# Delete recovery point
+aws backup delete-recovery-point \
+  --backup-vault-name production-vault \
+  --recovery-point-arn arn:aws:backup:us-east-1:123456789012:recovery-point:rds-db-abc123
+```
+
+---
+
+## Step-by-Step Examples
+
+### Example 1: Create RDS Backup Plan
+
+#### Step 1: Create Backup Vault
+
+```bash
+# Create vault for RDS backups
+aws backup create-backup-vault \
+  --backup-vault-name rds-prod-vault \
+  --backup-vault-description "Production RDS backups" \
+  --tags Environment=Production,Application=Database
+
+# Enable vault lock for compliance (optional)
+aws put-backup-vault-lock-configuration \
+  --backup-vault-name rds-prod-vault \
+  --min-retention-days 30 \
+  --max-retention-days 365 \
+  --changeable-for-days 7
+```
+
+#### Step 2: Create Backup Plan
+
+```bash
+# Create backup plan JSON
+cat > rds-backup-plan.json << 'EOF'
+{
+  "BackupPlanName": "RDSProduction",
+  "BackupPlanDescription": "Daily RDS backups with cross-region copy",
+  "Rules": [
+    {
+      "RuleName": "DailyBackup",
+      "TargetBackupVaultName": "rds-prod-vault",
+      "ScheduleExpression": "cron(0 2 ? * * *)",
+      "StartWindowMinutes": 60,
+      "CompletionWindowMinutes": 120,
+      "Lifecycle": {
+        "DeleteAfterDays": 30,
+        "MoveToColdStorageAfterDays": 7
+      },
+      "RecoveryPointTags": {
+        "Type": "DailyBackup",
+        "Environment": "Production"
+      },
+      "CopyActions": [
+        {
+          "DestinationVaultArn": "arn:aws:backup:us-west-2:123456789012:backup-vault:rds-dr-vault",
+          "Lifecycle": {
+            "DeleteAfterDays": 30
+          }
+        }
+      ]
+    },
+    {
+      "RuleName": "WeeklyBackup",
+      "TargetBackupVaultName": "rds-prod-vault",
+      "ScheduleExpression": "cron(0 3 ? * 1 *)",
+      "Lifecycle": {
+        "DeleteAfterDays": 90
+      },
+      "RecoveryPointTags": {
+        "Type": "WeeklyBackup"
+      }
+    }
+  ]
+}
+EOF
+
+# Create the backup plan
+BACKUP_PLAN_ID=$(aws backup create-backup-plan \
+  --backup-plan file://rds-backup-plan.json \
+  --query 'BackupPlanId' \
+  --output text)
+
+echo "Backup Plan ID: $BACKUP_PLAN_ID"
+```
+
+#### Step 3: Assign Resources to Plan
+
+```bash
+# Method 1: Assign by tag
+aws backup create-backup-selection \
+  --backup-plan-id $BACKUP_PLAN_ID \
+  --backup-selection '{
+    "SelectionName": "ProductionRDSByTag",
+    "Description": "All RDS instances tagged as production",
+    "Type": "RESOURCES",
+    "Resources": ["*"],
+    "ListOfTags": [
+      {
+        "ConditionType": "StringEquals",
+        "ConditionKey": "backup-plan",
+        "ConditionValue": "daily"
+      },
+      {
+        "ConditionType": "StringEquals",
+        "ConditionKey": "environment",
+        "ConditionValue": "production"
+      }
+    ]
+  }'
+
+# Method 2: Assign specific RDS instances
+aws backup create-backup-selection \
+  --backup-plan-id $BACKUP_PLAN_ID \
+  --backup-selection '{
+    "SelectionName": "SpecificRDSInstances",
+    "Description": "Specific production RDS instances",
+    "Type": "RESOURCES",
+    "Resources": [
+      "arn:aws:rds:us-east-1:123456789012:db:production-mysql",
+      "arn:aws:rds:us-east-1:123456789012:db:production-postgres"
+    ]
+  }'
+```
+
+#### Step 4: Monitor Backup Jobs
+
+```bash
+# List backup jobs
+aws backup list-backup-jobs \
+  --by-account-id 123456789012 \
+  --by-state COMPLETED
+
+# List recovery points for specific DB
+aws backup list-recovery-points-by-backup-vault \
+  --backup-vault-name rds-prod-vault \
+  --by-resource-type RDS \
+  --query 'RecoveryPoints[*].[RecoveryPointArn,CreationDate,Status]' \
+  --output table
+
+# Get backup job details
+aws backup describe-backup-job \
+  --backup-job-id backup-job-12345678-1234-1234-1234-123456789012
+```
+
+#### Step 5: Restore from Backup
+
+```bash
+# Start restore job
+RESTORE_JOB_ID=$(aws backup start-restore-job \
+  --recovery-point-arn arn:aws:backup:us-east-1:123456789012:recovery-point:rds-db-abc123 \
+  --iam-role-arn arn:aws:iam::123456789012:role/AWSBackupRole \
+  --metadata '{
+    "DBInstanceIdentifier": "restored-production-mysql",
+    "availabilityZone": "us-east-1a",
+    "port": "3306"
+  }' \
+  --query 'RestoreJobId' \
+  --output text)
+
+echo "Restore Job ID: $RESTORE_JOB_ID"
+
+# Monitor restore progress
+aws backup describe-restore-job \
+  --restore-job-id $RESTORE_JOB_ID
+
+# Wait for restoration complete
+while true; do
+  STATUS=$(aws backup describe-restore-job \
+    --restore-job-id $RESTORE_JOB_ID \
+    --query 'RestoreJob.Status' \
+    --output text)
+  
+  if [ "$STATUS" == "COMPLETED" ]; then
+    echo "Restore completed successfully"
+    break
+  elif [ "$STATUS" == "FAILED" ]; then
+    echo "Restore failed"
+    break
+  else
+    echo "Restore in progress: $STATUS"
+    sleep 30
+  fi
+done
+```
+
+---
+
+### Example 2: EBS Volume Backup Plan
+
+```bash
+# Create EBS backup plan
+aws backup create-backup-plan \
+  --backup-plan '{
+    "BackupPlanName": "EBSProduction",
+    "Rules": [
+      {
+        "RuleName": "HourlyBackup",
+        "TargetBackupVaultName": "ebs-prod-vault",
+        "ScheduleExpression": "cron(0 * ? * * *)",
+        "Lifecycle": {
+          "DeleteAfterDays": 7
+        }
+      },
+      {
+        "RuleName": "DailyBackup",
+        "TargetBackupVaultName": "ebs-prod-vault",
+        "ScheduleExpression": "cron(0 2 ? * * *)",
+        "Lifecycle": {
+          "DeleteAfterDays": 30
+        }
+      }
+    ]
+  }'
+
+# Assign to EBS volumes by tag
+aws backup create-backup-selection \
+  --backup-plan-id ebs-backup-plan-id \
+  --backup-selection '{
+    "SelectionName": "ProductionEBS",
+    "Type": "RESOURCES",
+    "Resources": ["*"],
+    "ListOfTags": [
+      {
+        "ConditionType": "StringEquals",
+        "ConditionKey": "backup",
+        "ConditionValue": "enabled"
+      }
+    ]
+  }'
+```
+
+### Example 3: DynamoDB Backup Plan with Cross-Region Copy
+
+```bash
+# Create DynamoDB backup plan with cross-region
+aws backup create-backup-plan \
+  --backup-plan '{
+    "BackupPlanName": "DynamoDBProduction",
+    "Rules": [
+      {
+        "RuleName": "DailyDynamoDB",
+        "TargetBackupVaultName": "dynamodb-prod-vault",
+        "ScheduleExpression": "cron(0 4 ? * * *)",
+        "Lifecycle": {
+          "DeleteAfterDays": 90
+        },
+        "CopyActions": [
+          {
+            "DestinationVaultArn": "arn:aws:backup:eu-west-1:123456789012:backup-vault:dynamodb-dr-vault",
+            "Lifecycle": {
+              "DeleteAfterDays": 90
+            }
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+---
+
+## Compliance and Management
+
+### 1. Backup Lock (WORM Compliance)
+
+```bash
+# Enable Compliance Mode Lock (cannot be modified after 7 days)
+aws put-backup-vault-lock-configuration \
+  --backup-vault-name compliance-vault \
+  --min-retention-days 2555 \
+  --max-retention-days 2555 \
+  --changeable-for-days 7
+
+# Parameters:
+# min-retention-days: Minimum retention (cannot delete before)
+# max-retention-days: Maximum retention (cannot keep longer)
+# changeable-for-days: Grace period before lock takes effect
+
+# Enable Governance Mode Lock (can override with permissions)
+aws put-backup-vault-lock-configuration \
+  --backup-vault-name standard-vault \
+  --min-retention-days 30 \
+  --max-retention-days 365 \
+  --changeable-for-days 7
+
+# Verify lock configuration
+aws get-backup-vault-lock-configuration \
+  --backup-vault-name compliance-vault
+
+# Lock details:
+# CreationDate: When lock created
+# LockedDate: When lock becomes active
+# LockState: COMPLIANCE or GOVERNANCE
+```
+
+### 2. Audit and Compliance Reporting
+
+```bash
+# List all backup jobs (audit trail)
+aws backup list-backup-jobs \
+  --by-state COMPLETED \
+  --query 'BackupJobs[*].[BackupJobId,ResourceArn,State,CreationDate,CompletionDate]' \
+  --output table
+
+# List copy jobs (cross-region backups)
+aws backup list-copy-jobs \
+  --by-state COMPLETED \
+  --query 'CopyJobs[*].[CopyJobId,SourceRecoveryPointArn,Status,CreationDate]' \
+  --output table
+
+# List backup plans
+aws backup list-backup-plans \
+  --query 'BackupPlansList[*].[BackupPlanName,BackupPlanId,CreationDate,LastExecutionDate]' \
+  --output table
+
+# Export compliance report
+aws backup describe-backup-vault \
+  --backup-vault-name compliance-vault \
+  --query 'BackupVaultArn' \
+  --output text
+```
+
+### 3. Backup Compliance Dashboard
+
+```bash
+# Get backup statistics
+aws backup describe-backup-vault \
+  --backup-vault-name production-vault
+
+# Get recovery point statistics
+aws backup list-recovery-points-by-backup-vault \
+  --backup-vault-name production-vault \
+  --query 'RecoveryPoints[*].[RecoveryPointArn,Status,CreationDate]' \
+  --output json
+
+# Calculate backup coverage
+TOTAL_DBS=$(aws rds describe-db-instances \
+  --query 'DBInstances[].DBInstanceIdentifier' \
+  --output text | wc -w)
+
+BACKED_UP_DBS=$(aws backup list-recovery-points-by-resource-type \
+  --resource-type RDS \
+  --query 'RecoveryPoints[].ResourceArn' \
+  --output text | sort -u | wc -w)
+
+echo "Database Backup Coverage: $BACKED_UP_DBS / $TOTAL_DBS"
+```
+
+---
+
+## Cross-Account Backups
+
+### 1. Cross-Account Backup Setup
+
+```bash
+# In primary account: Create backup vault
+aws backup create-backup-vault \
+  --backup-vault-name cross-account-vault \
+  --backup-vault-description "Receives backups from other accounts"
+
+# Enable cross-account access
+aws backup put-backup-vault-access-policy \
+  --backup-vault-name cross-account-vault \
+  --policy '{
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Principal": {
+          "AWS": [
+            "arn:aws:iam::111111111111:root",
+            "arn:aws:iam::222222222222:root"
+          ]
+        },
+        "Action": [
+          "backup:CopyIntoBackupVault",
+          "backup:StartRestoreJob"
+        ],
+        "Resource": "*"
+      }
+    ]
+  }'
+
+# In secondary account: Create backup plan that copies to primary account vault
+aws backup create-backup-plan \
+  --backup-plan '{
+    "BackupPlanName": "CrossAccountBackup",
+    "Rules": [
+      {
+        "RuleName": "CopyToPrimaryAccount",
+        "TargetBackupVaultName": "secondary-vault",
+        "ScheduleExpression": "cron(0 5 ? * * *)",
+        "CopyActions": [
+          {
+            "DestinationVaultArn": "arn:aws:backup:us-east-1:999999999999:backup-vault:cross-account-vault",
+            "Lifecycle": {
+              "DeleteAfterDays": 90
+            }
+          }
+        ]
+      }
+    ]
+  }'
+```
+
+---
+
+## Real-World Use Cases
+
+### Use Case 1: Healthcare Compliance (HIPAA)
+
+**Scenario:** Healthcare app requires 7-year data retention with immutable backups
+
+```bash
+# Create compliance vault with lock
+aws backup create-backup-vault \
+  --backup-vault-name hipaa-vault \
+  --encryption-key-arn arn:aws:kms:us-east-1:123456789012:key/xxxx
+
+# Enable compliance lock (7 years = 2555 days)
+aws put-backup-vault-lock-configuration \
+  --backup-vault-name hipaa-vault \
+  --min-retention-days 2555 \
+  --max-retention-days 2555 \
+  --changeable-for-days 0  # No grace period (strict compliance)
+
+# Create backup plan with HIPAA requirements
+aws backup create-backup-plan \
+  --backup-plan '{
+    "BackupPlanName": "HIPAACompliance",
+    "Rules": [
+      {
+        "RuleName": "DailyHIPAABackup",
+        "TargetBackupVaultName": "hipaa-vault",
+        "ScheduleExpression": "cron(0 1 ? * * *)",
+        "Lifecycle": {
+          "DeleteAfterDays": 2555,
+          "MoveToColdStorageAfterDays": 30
+        },
+        "RecoveryPointTags": {
+          "Compliance": "HIPAA",
+          "DataClassification": "PHI"
+        }
+      }
+    ]
+  }'
+
+# Backup all RDS databases with patient data
+aws backup create-backup-selection \
+  --backup-plan-id hipaa-plan-id \
+  --backup-selection '{
+    "SelectionName": "PatientData",
+    "Type": "RESOURCES",
+    "Resources": ["*"],
+    "ListOfTags": [
+      {
+        "ConditionType": "StringEquals",
+        "ConditionKey": "data-type",
+        "ConditionValue": "patient-records"
+      }
+    ]
+  }'
+
+# Audit compliance
+aws backup list-backup-jobs \
+  --query 'BackupJobs[?State==`COMPLETED`].[ResourceArn,CreationDate,Status]'
+```
+
+### Use Case 2: Disaster Recovery (Multi-Region)
+
+**Scenario:** Critical database needs rapid disaster recovery in different region
+
+```bash
+# Create backup vault in primary region
+aws backup create-backup-vault \
+  --backup-vault-name prod-us-east-1
+
+# Create backup vault in DR region
+aws backup create-backup-vault \
+  --backup-vault-name prod-us-west-2 \
+  --region us-west-2
+
+# Create backup plan with cross-region copy
+aws backup create-backup-plan \
+  --backup-plan '{
+    "BackupPlanName": "DisasterRecovery",
+    "Rules": [
+      {
+        "RuleName": "Hourly",
+        "TargetBackupVaultName": "prod-us-east-1",
+        "ScheduleExpression": "cron(0 * ? * * *)",
+        "StartWindowMinutes": 60,
+        "CompletionWindowMinutes": 120,
+        "Lifecycle": {
+          "DeleteAfterDays": 7
+        },
+        "CopyActions": [
+          {
+            "DestinationVaultArn": "arn:aws:backup:us-west-2:123456789012:backup-vault:prod-us-west-2",
+            "Lifecycle": {
+              "DeleteAfterDays": 7
+            }
+          }
+        ]
+      }
+    ]
+  }'
+
+# Recovery: Start restore from DR region backup
+aws backup start-restore-job \
+  --recovery-point-arn arn:aws:backup:us-west-2:123456789012:recovery-point:rds-db-abc123 \
+  --iam-role-arn arn:aws:iam::123456789012:role/AWSBackupRole \
+  --metadata '{
+    "DBInstanceIdentifier": "recovered-prod-db",
+    "availabilityZone": "us-west-2a"
+  }' \
+  --region us-west-2
+```
+
+### Use Case 3: Financial Services Audit Trail
+
+**Scenario:** Track all database changes with immutable audit logs
+
+```bash
+# Create audit vault with encryption
+aws backup create-backup-vault \
+  --backup-vault-name audit-vault \
+  --encryption-key-arn arn:aws:kms:us-east-1:123456789012:key/audit-key
+
+# Enable governance lock for audit trail
+aws put-backup-vault-lock-configuration \
+  --backup-vault-name audit-vault \
+  --min-retention-days 2555 \
+  --max-retention-days 2555
+
+# Create backup plan with audit trail
+aws backup create-backup-plan \
+  --backup-plan '{
+    "BackupPlanName": "FinancialAudit",
+    "Rules": [
+      {
+        "RuleName": "TwiceDaily",
+        "TargetBackupVaultName": "audit-vault",
+        "ScheduleExpression": "cron(0 6,18 ? * * *)",
+        "Lifecycle": {
+          "DeleteAfterDays": 2555
+        },
+        "RecoveryPointTags": {
+          "AuditRequired": "true",
+          "Compliance": "SOX"
+        }
+      }
+    ]
+  }'
+
+# Monitor backup audit trail
+aws backup list-backup-jobs \
+  --query 'BackupJobs[*].[BackupJobId,ResourceArn,CreationDate,State]' \
+  --output json > backup-audit-trail.json
+
+# Export to CloudWatch Logs for archival
+aws logs create-log-group --log-group-name /aws/backup/audit
+
+aws backup list-backup-jobs \
+  --query 'BackupJobs[*].[BackupJobId,ResourceArn,CreationDate]' \
+  --output json | \
+  aws logs put-log-events \
+    --log-group-name /aws/backup/audit \
+    --log-stream-name backup-trail
+```
+
+### Use Case 4: Development/Test Environment Management
+
+**Scenario:** Refresh dev/test databases with production data daily
+
+```bash
+# Create short-retention backup plan for dev
+aws backup create-backup-plan \
+  --backup-plan '{
+    "BackupPlanName": "DevelopmentDatabases",
+    "Rules": [
+      {
+        "RuleName": "DailySnapshot",
+        "TargetBackupVaultName": "dev-vault",
+        "ScheduleExpression": "cron(0 22 ? * * *)",
+        "Lifecycle": {
+          "DeleteAfterDays": 3
+        }
+      }
+    ]
+  }'
+
+# Assign to dev databases
+aws backup create-backup-selection \
+  --backup-plan-id dev-plan-id \
+  --backup-selection '{
+    "SelectionName": "DevDatabases",
+    "Type": "RESOURCES",
+    "Resources": ["*"],
+    "ListOfTags": [
+      {
+        "ConditionType": "StringEquals",
+        "ConditionKey": "environment",
+        "ConditionValue": "development"
+      }
+    ]
+  }'
+
+# Restore production backup to dev daily via Lambda
+# Lambda trigger: Restore latest prod backup to dev database
+# Schedule: Daily at 23:00 UTC
+```
+
+---
+
+## Best Practices
+
+### 1. Backup Planning Strategy
+
+```bash
+# Define RPO/RTO requirements
+# RPO (Recovery Point Objective): How much data loss acceptable?
+# RTO (Recovery Time Objective): How quickly must system recover?
+
+# Example RPO/RTO matrix:
+# Critical: RPO=1hr, RTO=15min → Hourly backups, fast restoration
+# Important: RPO=4hr, RTO=1hr → 4x daily backups, standard restoration
+# Non-critical: RPO=24hr, RTO=8hr → Daily backups, slower restoration
+```
+
+### 2. Retention Policy
+
+```bash
+# Hot storage: 7 days (warm, immediate access)
+# Cold storage: 30 days (archived, slower access)
+# Delete: After 365 days (or compliance requirement)
+
+# Calculate backup storage cost
+# Example: 100 GB database
+# Daily backups for 30 days: 3 TB × $0.05 = $150/month
+# Move to cold after 7 days: 3 TB × $0.01 = $30/month
+# Total savings with cold storage: ~60%
+```
+
+### 3. Tagging Strategy
+
+```bash
+# Tag backups for organization and cost allocation
+RecoveryPointTags:
+  {
+    "BackupType": "Daily|Weekly|Monthly",
+    "Environment": "Production|Development|Testing",
+    "CostCenter": "Engineering|Finance",
+    "Application": "AppName",
+    "ComplianceRequired": "true|false"
+  }
+```
+
+### 4. Testing Restore Procedures
+
+```bash
+# Schedule monthly restore tests
+# Monthly: Restore one random backup to test environment
+# Verify: Data integrity, application functionality
+# Document: Recovery time, success/failure details
+
+# Create automated restore test
+aws backup start-restore-job \
+  --recovery-point-arn <random-recovery-point-arn> \
+  --iam-role-arn arn:aws:iam::123456789012:role/AWSBackupRole \
+  --metadata '{
+    "DBInstanceIdentifier": "test-restore-$(date +%Y%m%d-%H%M%S)"
+  }'
+```
+
+### 5. Monitoring and Alerts
+
+```bash
+# Set CloudWatch alarms for backup failures
+aws cloudwatch put-metric-alarm \
+  --alarm-name backup-job-failed \
+  --alarm-description "Alert on backup job failure" \
+  --metric-name BackupJobsFailed \
+  --namespace AWS/Backup \
+  --statistic Sum \
+  --threshold 1 \
+  --comparison-operator GreaterThanOrEqualToThreshold \
+  --alarm-actions arn:aws:sns:us-east-1:123456789012:backup-alerts
+
+# Monitor backup completion time
+aws cloudwatch put-metric-alarm \
+  --alarm-name backup-job-duration \
+  --metric-name BackupJobDuration \
+  --namespace AWS/Backup \
+  --statistic Average \
+  --threshold 3600000  # milliseconds (1 hour)
+  --comparison-operator GreaterThanThreshold
+```
+
+### 6. Cross-Account Strategy
+
+```bash
+# Centralized backup account architecture:
+# - Central account: Stores all backups from multiple accounts
+# - Backup accounts: Run backup plans, copy to central
+# - Benefits: Centralized management, cross-account recovery, cost allocation
+```
+
+---
+
+## Troubleshooting
+
+### Problem 1: Backup Job Failed
+
+**Error:** `BackupJobFailedException`
+
+**Solution:**
+```bash
+# Get job details
+aws backup describe-backup-job \
+  --backup-job-id backup-job-12345678
+
+# Common causes:
+# 1. IAM role missing permissions
+# 2. Resource doesn't support backup
+# 3. Network/connectivity issues
+# 4. Insufficient storage space
+
+# Add required IAM permissions
+aws iam attach-role-policy \
+  --role-name AWSBackupRole \
+  --policy-arn arn:aws:iam::aws:policy/AWSBackupServiceRolePolicyForBackup
+```
+
+### Problem 2: Restore Fails
+
+**Error:** `RestoreJobFailedException`
+
+**Solution:**
+```bash
+# Verify recovery point exists
+aws backup describe-recovery-point \
+  --backup-vault-name prod-vault \
+  --recovery-point-arn arn:aws:backup:...
+
+# Check target resource compatibility
+# Verify IAM role has restore permissions
+# Verify network connectivity
+
+# Retry restore with explicit parameters
+aws backup start-restore-job \
+  --recovery-point-arn arn:aws:backup:... \
+  --iam-role-arn arn:aws:iam::123456789012:role/AWSBackupRole \
+  --metadata '{"DBInstanceIdentifier": "restored-db"}'
+```
+
+### Problem 3: Cross-Region Copy Failing
+
+**Error:** `CrossRegionCopyFailedException`
+
+**Solution:**
+```bash
+# Verify destination vault exists in target region
+aws backup describe-backup-vault \
+  --backup-vault-name dr-vault \
+  --region us-west-2
+
+# Check IAM permissions for cross-region copy
+# Verify KMS key accessible in both regions
+# Check network connectivity between regions
+
+# Re-enable copy action
+aws backup update-backup-plan \
+  --backup-plan-id plan-id \
+  --backup-plan file://updated-plan.json
+```
+
+### Problem 4: Vault Lock Cannot Be Modified
+
+**Error:** `BackupVaultLocked`
+
+**Solution:**
+```bash
+# Check lock status
+aws get-backup-vault-lock-configuration \
+  --backup-vault-name compliance-vault
+
+# If in grace period: Wait until changeable-for-days expires
+# If compliance mode: Cannot modify (permanent)
+# If governance mode: Can be overridden by authorized users
+
+# Override governance lock (if authorized)
+aws put-backup-vault-access-policy \
+  --backup-vault-name vault-name \
+  --policy file://new-policy.json
+```
+
+---
+
+## Cost Optimization
+
+### Pricing Breakdown (US East-1, 2025)
+
+```
+Backup Storage:
+- On-demand backups: $0.05 per GB-month
+- Cold storage: $0.01 per GB-month (4x cheaper after 30 days)
+- Restore: $0.05 per GB restored
+
+Cross-Region Copy:
+- Copy to different region: $0.05 per GB-month (for copy storage)
+- Data transfer: Standard AWS data transfer rates
+
+Example Monthly Costs:
+- 100 GB database, daily backups (100 copies)
+- Warm storage (7 days): 7 × 100 GB × $0.05 = $35
+- Cold storage (23 days): 23 × 100 GB × $0.01 = $23
+- Cross-region copy: 100 GB × $0.05 = $5
+- Total: ~$63/month
+
+Cost Optimization Strategies:
+1. Move old backups to cold storage immediately
+2. Reduce retention for non-critical resources
+3. Use on-demand backups for critical-only systems
+4. Consolidate backups from multiple accounts
+5. Delete unnecessary recovery points
+```
+
+### Cost Reduction Tips
+
+```bash
+# 1. Reduce retention for dev/test
+DeleteAfterDays: 3  # vs 30 for production
+
+# 2. Skip cold storage for frequently-accessed backups
+MoveToColdStorageAfterDays: 0  # Skip cold, delete after X days
+
+# 3. Use selective backup for large databases
+# Backup only tables/volumes that change frequently
+
+# 4. Consolidate cross-region copies
+# Copy only critical backups to DR region
+
+# 5. Monitor backup size regularly
+aws backup list-recovery-points-by-backup-vault \
+  --backup-vault-name prod-vault \
+  --query 'RecoveryPoints[*].[CreationDate,Status]' \
+  --output table
+```
+
+---
+
+## Summary
+
+AWS Backup provides:
+- ✅ **Centralized management** - Manage backups across services from one console
+- ✅ **Automated backup policies** - Consistent, reliable backup schedule
+- ✅ **Compliance** - Meet regulatory requirements with retention policies and audit trails
+- ✅ **Cross-region backup** - Disaster recovery with automatic replication
+- ✅ **Cost-effective** - Cold storage, selective backup, pay-per-GB
+- ✅ **Ransomware protection** - Backup Lock prevents accidental/malicious deletion
+- ✅ **Easy recovery** - Fast, simple restore with point-in-time recovery
+- ✅ **Audit trail** - Complete history of backup/restore operations
+
+AWS Backup is ideal for:
+- Multi-service backup consolidation
+- Compliance and regulatory requirements (HIPAA, SOX, GDPR)
+- Disaster recovery planning
+- Cross-account backup management
+- Automated backup lifecycle management
+- Ransomware protection and immutable backups
+
+---
+
+**Last Updated:** November 26, 2025
+**Version:** 1.0
+**Comprehensive Coverage:** All aspects of AWS Backup with real-world examples, CLI commands, and best practices.
