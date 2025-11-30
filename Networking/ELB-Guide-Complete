@@ -1,0 +1,1158 @@
+# Elastic Load Balancing (ALB, NLB, CLB)
+## Distributing Traffic Across Resources
+
+**Complete Guide with Examples and Top 5 Interview Questions**
+
+---
+
+## Table of Contents
+
+1. Overview
+2. Types of Load Balancers
+3. Application Load Balancer (ALB)
+4. Network Load Balancer (NLB)
+5. Classic Load Balancer (CLB)
+6. Health Checks
+7. Target Groups
+8. Listeners and Rules
+9. Step-by-Step Examples
+10. Advanced Features
+11. Real-World Architectures
+12. Best Practices
+13. Top 5 Interview Questions
+
+---
+
+## 1. Overview
+
+Elastic Load Balancing (ELB) automatically distributes incoming application traffic across multiple targets, such as Amazon EC2 instances, containers, IP addresses, and Lambda functions. ELB can handle varying loads in single or multiple Availability Zones.
+
+### Key Benefits
+
+- **High Availability** - Distribute traffic across multiple resources
+- **Fault Tolerance** - Automatic failover to healthy targets
+- **Auto-scaling** - Integrate with Auto Scaling Groups
+- **Performance** - Scale to millions of requests per second
+- **Security** - SSL/TLS termination, WAF integration
+- **Monitoring** - CloudWatch metrics and access logs
+- **Flexible Routing** - Rule-based traffic distribution
+- **Cost-effective** - Pay only for what you use
+
+### When to Use Load Balancing
+
+- Multiple servers need to share traffic
+- Need high availability and fault tolerance
+- Require SSL/TLS termination
+- Need to route traffic based on content
+- Running containers or microservices
+- Need extreme performance (millions of RPS)
+
+---
+
+## 2. Types of Load Balancers
+
+| Feature | ALB | NLB | CLB |
+|---------|-----|-----|-----|
+| Layer | Layer 7 (Application) | Layer 4 (Transport) | Layer 4/7 (Hybrid) |
+| Use Case | Web apps, microservices | Extreme performance, gaming, IoT | Legacy apps |
+| Throughput | High (millions RPS) | Ultra-high (millions RPS) | High |
+| Latency | ~100 milliseconds | ~100 microseconds | Low (milliseconds) |
+| Protocols | HTTP, HTTPS, HTTP/2, gRPC | TCP, UDP, TLS | TCP, SSL/TLS, HTTP/HTTPS |
+| Pricing | ~$0.022/hour + LCU | ~$0.006/hour + NLCU | ~$0.025/hour |
+| Sticky Sessions | Yes (duration-based) | Yes (flow hash) | Yes (duration-based) |
+| Path-based Routing | Yes | No | No |
+| Host-based Routing | Yes | No | No |
+| WebSocket/HTTP/2 | Yes | No | No |
+| Real IP Address | Yes (X-Forwarded-For) | Yes (source IP) | Yes (X-Forwarded-For) |
+| SSL/TLS Termination | Yes | Yes | Yes |
+| Usage | 70% of deployments | 20% (specialized) | 10% (legacy) |
+
+---
+
+## 3. Application Load Balancer (ALB)
+
+### ALB Overview
+
+ALB works at Layer 7 (Application Layer):
+- Understands HTTP/HTTPS
+- Reads HTTP headers (Host, Path, User-Agent)
+- Makes intelligent routing decisions
+- Perfect for microservices, containers, web apps
+
+### Create ALB
+
+```bash
+# Create Application Load Balancer
+ALB=$(aws elbv2 create-load-balancer \
+  --name my-app-alb \
+  --subnets subnet-public-1a subnet-public-1b \
+  --security-groups sg-12345678 \
+  --scheme internet-facing \
+  --type application \
+  --ip-address-type ipv4 \
+  --tags Key=Name,Value=app-alb Key=Environment,Value=prod \
+  --query 'LoadBalancers[0].LoadBalancerArn' \
+  --output text)
+
+echo "ALB ARN: $ALB"
+
+# Create Target Group
+TG=$(aws elbv2 create-target-group \
+  --name web-targets \
+  --protocol HTTP \
+  --port 80 \
+  --vpc-id vpc-12345678 \
+  --target-type instance \
+  --health-check-path / \
+  --health-check-interval-seconds 30 \
+  --healthy-threshold-count 2 \
+  --unhealthy-threshold-count 2 \
+  --matcher HttpCode=200 \
+  --query 'TargetGroups[0].TargetGroupArn' \
+  --output text)
+
+# Register Targets
+aws elbv2 register-targets \
+  --target-group-arn $TG \
+  --targets Id=i-0123456789abcdef0 Id=i-0123456789abcdef1
+
+# Create Listener
+LISTENER=$(aws elbv2 create-listener \
+  --load-balancer-arn $ALB \
+  --protocol HTTP \
+  --port 80 \
+  --default-actions Type=forward,TargetGroupArn=$TG \
+  --query 'Listeners[0].ListenerArn' \
+  --output text)
+
+# Get ALB DNS
+DNS=$(aws elbv2 describe-load-balancers \
+  --load-balancer-arns $ALB \
+  --query 'LoadBalancers[0].DNSName' \
+  --output text)
+
+echo "Access at: http://$DNS"
+```
+
+### ALB Routing Rules
+
+```bash
+# Path-based Routing
+aws elbv2 create-rule \
+  --listener-arn $LISTENER \
+  --conditions Field=path-pattern,Values=/api/* \
+  --priority 1 \
+  --actions Type=forward,TargetGroupArn=$API_TG
+
+# Host-based Routing
+aws elbv2 create-rule \
+  --listener-arn $LISTENER \
+  --conditions Field=host-header,Values=api.example.com \
+  --priority 2 \
+  --actions Type=forward,TargetGroupArn=$API_TG
+
+# Method-based Routing
+aws elbv2 create-rule \
+  --listener-arn $LISTENER \
+  --conditions Field=http-request-method,Values=POST \
+  --priority 3 \
+  --actions Type=forward,TargetGroupArn=$API_TG
+```
+
+### ALB Features
+
+- **SSL/TLS Termination** - ALB terminates SSL, communicates with backends over HTTP
+- **HTTP/2 Support** - Automatically supported with ALB
+- **WebSocket Support** - ALB maintains long-lived connections
+- **Sticky Sessions** - Session affinity based on duration
+- **Request Headers** - Adds X-Forwarded-* headers for client info
+
+---
+
+## 4. Network Load Balancer (NLB)
+
+### NLB Overview
+
+NLB works at Layer 4 (Transport Layer):
+- Extreme performance (millions of requests/sec)
+- Ultra-low latency (~100 microseconds)
+- Handles TCP/UDP traffic
+- Perfect for: Gaming, real-time apps, IoT, DNS, VoIP
+
+### Create NLB
+
+```bash
+# Create Network Load Balancer
+NLB=$(aws elbv2 create-load-balancer \
+  --name my-nlb \
+  --subnets subnet-public-1a subnet-public-1b \
+  --scheme internet-facing \
+  --type network \
+  --ip-address-type ipv4 \
+  --query 'LoadBalancers[0].LoadBalancerArn' \
+  --output text)
+
+# Create UDP Target Group for gaming
+NLB_TG=$(aws elbv2 create-target-group \
+  --name gaming-servers \
+  --protocol UDP \
+  --port 9000 \
+  --vpc-id vpc-12345678 \
+  --target-type instance \
+  --health-check-protocol TCP \
+  --health-check-port 9000 \
+  --query 'TargetGroups[0].TargetGroupArn' \
+  --output text)
+
+# Create UDP Listener
+aws elbv2 create-listener \
+  --load-balancer-arn $NLB \
+  --protocol UDP \
+  --port 9000 \
+  --default-actions Type=forward,TargetGroupArn=$NLB_TG
+
+# Register gaming servers
+aws elbv2 register-targets \
+  --target-group-arn $NLB_TG \
+  --targets Id=i-gaming-1 Id=i-gaming-2 Id=i-gaming-3
+```
+
+### NLB Features
+
+- **Connection Draining** - Gracefully close connections before removing instance
+- **Preserve Source IP** - Important for real-time apps
+- **Flow Hash Algorithm** - Same flow always goes to same target
+- **Cross-Zone Load Balancing** - Distribute across AZs
+- **TLS Termination** - NLB can terminate TLS for extreme performance
+
+### NLB Use Cases
+
+- **Gaming**: Millions of players, UDP protocol, ultra-low latency
+- **IoT Devices**: Millions of sensors, high throughput data ingestion
+- **Real-time Communication**: Video streaming, VoIP, multiplayer apps
+- **DNS Services**: DNS queries, extreme throughput needed
+- **Financial Trading**: Microsecond-level latency critical
+
+---
+
+## 5. Classic Load Balancer (CLB)
+
+### CLB Overview
+
+CLB (Legacy - Still Used):
+- Layer 4/7 hybrid (understands some Layer 7, mainly Layer 4)
+- Previous generation load balancer
+- Still supported but ALB/NLB recommended
+- Good for: Legacy applications, simple setups
+
+### Create CLB
+
+```bash
+# Create Classic Load Balancer
+CLB=$(aws elb create-load-balancer \
+  --load-balancer-name my-classic-lb \
+  --listeners Protocol=HTTP,LoadBalancerPort=80,InstancePort=80,InstanceProtocol=HTTP \
+  --availability-zones us-east-1a us-east-1b \
+  --query 'DNSName' \
+  --output text)
+
+# Register EC2 instances
+aws elb register-instances-with-load-balancer \
+  --load-balancer-name my-classic-lb \
+  --instances i-12345678 i-87654321 i-11223344
+
+# Configure Health Check
+aws elb configure-health-check \
+  --load-balancer-name my-classic-lb \
+  --health-check Target=HTTP:80/health,Interval=30,Timeout=5,HealthyThreshold=2,UnhealthyThreshold=2
+```
+
+---
+
+## 6. Health Checks
+
+### Health Check Configuration
+
+```bash
+# ALB Health Check
+aws elbv2 modify-target-group \
+  --target-group-arn $TG \
+  --health-check-protocol HTTP \
+  --health-check-path /health \
+  --health-check-interval-seconds 30 \
+  --health-check-timeout-seconds 5 \
+  --healthy-threshold-count 2 \
+  --unhealthy-threshold-count 2 \
+  --matcher HttpCode=200,201,202
+```
+
+### Custom Health Check Endpoint
+
+```bash
+# Example health check endpoint (Node.js)
+app.get('/health', (req, res) => {
+  // Check database connection
+  if (!db.isConnected()) {
+    return res.status(503).json({ status: 'unhealthy' });
+  }
+  
+  // Check memory usage
+  const memUsage = process.memoryUsage();
+  if (memUsage.heapUsed > memUsage.heapTotal * 0.9) {
+    return res.status(503).json({ status: 'unhealthy' });
+  }
+  
+  // All checks passed
+  res.status(200).json({ status: 'healthy' });
+});
+```
+
+### Health Check Flow
+
+```
+Timeline: Health check every 30 seconds
+
+Time │ Check Result │ Status
+─────┼──────────────┼──────────────────────
+0s   │ -            │ InService (initial)
+30s  │ Failed (500) │ InService (wait for 2)
+60s  │ Failed (500) │ OutOfService (2 failed)
+90s  │ Success (200)│ OutOfService (wait for 2)
+120s │ Success (200)│ InService (2 healthy)
+```
+
+---
+
+## 7. Target Groups
+
+### Target Types
+
+```bash
+# Instance Targets (EC2 instances)
+TG_INSTANCES=$(aws elbv2 create-target-group \
+  --name web-servers \
+  --protocol HTTP \
+  --port 80 \
+  --vpc-id vpc-12345678 \
+  --target-type instance \
+  --query 'TargetGroups[0].TargetGroupArn' \
+  --output text)
+
+# IP Targets (On-premises, other VPC, Lambda, Fargate)
+TG_IPS=$(aws elbv2 create-target-group \
+  --name api-servers \
+  --protocol HTTP \
+  --port 8080 \
+  --vpc-id vpc-12345678 \
+  --target-type ip \
+  --query 'TargetGroups[0].TargetGroupArn' \
+  --output text)
+
+# Lambda Targets
+TG_LAMBDA=$(aws elbv2 create-target-group \
+  --name lambda-targets \
+  --protocol HTTP \
+  --target-type lambda \
+  --query 'TargetGroups[0].TargetGroupArn' \
+  --output text)
+```
+
+### Register and Deregister Targets
+
+```bash
+# Register instances
+aws elbv2 register-targets \
+  --target-group-arn $TG \
+  --targets Id=i-12345678 Id=i-87654321 Id=i-11223344
+
+# Deregister target with connection draining
+aws elbv2 deregister-targets \
+  --target-group-arn $TG \
+  --targets Id=i-12345678
+
+# List targets
+aws elbv2 describe-target-health \
+  --target-group-arn $TG \
+  --query 'TargetHealthDescriptions[*].[Target.Id,TargetHealth.State,TargetHealth.Reason]' \
+  --output table
+```
+
+---
+
+## 8. Listeners and Rules
+
+### Create Listeners
+
+```bash
+# HTTP Listener (port 80)
+LISTENER_HTTP=$(aws elbv2 create-listener \
+  --load-balancer-arn $ALB \
+  --protocol HTTP \
+  --port 80 \
+  --default-actions Type=forward,TargetGroupArn=$TG \
+  --query 'Listeners[0].ListenerArn' \
+  --output text)
+
+# HTTPS Listener (port 443)
+LISTENER_HTTPS=$(aws elbv2 create-listener \
+  --load-balancer-arn $ALB \
+  --protocol HTTPS \
+  --port 443 \
+  --certificates CertificateArn=$CERT_ARN \
+  --default-actions Type=forward,TargetGroupArn=$TG \
+  --query 'Listeners[0].ListenerArn' \
+  --output text)
+
+# Redirect HTTP to HTTPS
+aws elbv2 create-listener \
+  --load-balancer-arn $ALB \
+  --protocol HTTP \
+  --port 80 \
+  --default-actions Type=redirect,RedirectConfig={Protocol=HTTPS,Port=443,StatusCode=HTTP_301}
+```
+
+### Listener Rules (Priority-based Routing)
+
+```bash
+# Rule 1: Priority 1 - API requests
+aws elbv2 create-rule \
+  --listener-arn $LISTENER_HTTPS \
+  --priority 1 \
+  --conditions Field=path-pattern,Values=/api/* \
+  --actions Type=forward,TargetGroupArn=$API_TG
+
+# Rule 2: Priority 2 - Admin requests
+aws elbv2 create-rule \
+  --listener-arn $LISTENER_HTTPS \
+  --priority 2 \
+  --conditions Field=path-pattern,Values=/admin/* \
+  --actions Type=forward,TargetGroupArn=$ADMIN_TG
+
+# Rule 3: Priority 3 - Static content
+aws elbv2 create-rule \
+  --listener-arn $LISTENER_HTTPS \
+  --priority 3 \
+  --conditions Field=path-pattern,Values=/static/* \
+  --actions Type=forward,TargetGroupArn=$STATIC_TG
+```
+
+---
+
+## 9. Step-by-Step Examples
+
+### Example 1: Multi-Tier Application with ALB
+
+```bash
+#!/bin/bash
+set -e
+
+# Configuration
+VPC_ID="vpc-12345678"
+SUBNET_1A="subnet-12345678"
+SUBNET_1B="subnet-87654321"
+CERT_ARN="arn:aws:acm:us-east-1:123456789012:certificate/abc123"
+
+echo "=== Creating ALB ==="
+ALB=$(aws elbv2 create-load-balancer \
+  --name three-tier-alb \
+  --subnets $SUBNET_1A $SUBNET_1B \
+  --security-groups sg-12345678 \
+  --scheme internet-facing \
+  --type application \
+  --tags Key=Name,Value=three-tier-alb Key=Environment,Value=prod \
+  --query 'LoadBalancers[0].LoadBalancerArn' \
+  --output text)
+echo "ALB Created: $ALB"
+
+echo "=== Creating Target Groups ==="
+
+# Web Tier Target Group
+WEB_TG=$(aws elbv2 create-target-group \
+  --name web-servers \
+  --protocol HTTP \
+  --port 80 \
+  --vpc-id $VPC_ID \
+  --target-type instance \
+  --health-check-path / \
+  --query 'TargetGroups[0].TargetGroupArn' \
+  --output text)
+echo "Web TG: $WEB_TG"
+
+# API Tier Target Group
+API_TG=$(aws elbv2 create-target-group \
+  --name api-servers \
+  --protocol HTTP \
+  --port 8080 \
+  --vpc-id $VPC_ID \
+  --target-type instance \
+  --health-check-path /health \
+  --query 'TargetGroups[0].TargetGroupArn' \
+  --output text)
+echo "API TG: $API_TG"
+
+echo "=== Registering Targets ==="
+aws elbv2 register-targets --target-group-arn $WEB_TG --targets Id=i-web-1 Id=i-web-2 Id=i-web-3
+aws elbv2 register-targets --target-group-arn $API_TG --targets Id=i-api-1 Id=i-api-2
+
+echo "=== Creating HTTPS Listener ==="
+LISTENER_HTTPS=$(aws elbv2 create-listener \
+  --load-balancer-arn $ALB \
+  --protocol HTTPS \
+  --port 443 \
+  --certificates CertificateArn=$CERT_ARN \
+  --default-actions Type=forward,TargetGroupArn=$WEB_TG \
+  --query 'Listeners[0].ListenerArn' \
+  --output text)
+
+echo "=== Creating HTTP Redirect ==="
+aws elbv2 create-listener \
+  --load-balancer-arn $ALB \
+  --protocol HTTP \
+  --port 80 \
+  --default-actions Type=redirect,RedirectConfig={Protocol=HTTPS,Port=443,StatusCode=HTTP_301}
+
+echo "=== Creating Rules ==="
+aws elbv2 create-rule \
+  --listener-arn $LISTENER_HTTPS \
+  --priority 1 \
+  --conditions Field=path-pattern,Values=/api/* \
+  --actions Type=forward,TargetGroupArn=$API_TG
+
+echo "Configuration Complete!"
+DNS=$(aws elbv2 describe-load-balancers \
+  --load-balancer-arns $ALB \
+  --query 'LoadBalancers[0].DNSName' \
+  --output text)
+echo "ALB DNS: https://$DNS"
+```
+
+### Example 2: Auto Scaling with ALB
+
+```bash
+# Create Launch Template
+LAUNCH_TEMPLATE=$(aws ec2 create-launch-template \
+  --launch-template-name web-app-template \
+  --launch-template-data '{
+    "ImageId": "ami-0c55b159cbfafe1f0",
+    "InstanceType": "t3.micro",
+    "SecurityGroupIds": ["sg-12345678"]
+  }' \
+  --query 'LaunchTemplate.LaunchTemplateId' \
+  --output text)
+
+# Create Auto Scaling Group
+aws autoscaling create-auto-scaling-group \
+  --auto-scaling-group-name web-app-asg \
+  --launch-template LaunchTemplateId=$LAUNCH_TEMPLATE,Version='$Latest' \
+  --min-size 2 \
+  --max-size 10 \
+  --desired-capacity 3 \
+  --vpc-zone-identifier "subnet-12345678,subnet-87654321" \
+  --target-group-arns $WEB_TG \
+  --health-check-type ELB
+
+# Create scaling policy
+aws autoscaling put-scaling-policy \
+  --auto-scaling-group-name web-app-asg \
+  --policy-name scale-up \
+  --policy-type TargetTrackingScaling \
+  --target-tracking-configuration '{
+    "PredefinedMetricSpecification": {
+      "PredefinedMetricType": "ASGAverageCPUUtilization"
+    },
+    "TargetValue": 70.0
+  }'
+```
+
+---
+
+## 10. Advanced Features
+
+### SSL/TLS Configuration
+
+```bash
+# Create listener with multiple certificates (SNI)
+aws elbv2 create-listener \
+  --load-balancer-arn $ALB \
+  --protocol HTTPS \
+  --port 443 \
+  --certificates CertificateArn=$PRIMARY_CERT \
+  --alpn-policy HTTP2 HTTP1.1 \
+  --default-actions Type=forward,TargetGroupArn=$TG
+
+# Add additional certificates
+aws elbv2 add-listener-certificates \
+  --listener-arn $LISTENER \
+  --certificates CertificateArn=$SECONDARY_CERT
+
+# Configure SSL security policy
+aws elbv2 modify-listener \
+  --listener-arn $LISTENER \
+  --ssl-policy ELBSecurityPolicy-TLS-1-2-2017-01
+```
+
+### WAF Integration
+
+```bash
+# Associate WAF with ALB
+aws wafv2 associate-web-acl \
+  --web-acl-arn arn:aws:wafv2:us-east-1:123456789012:global/webacl/example/a1234567 \
+  --resource-arn $ALB
+```
+
+### Access Logs
+
+```bash
+# Enable ALB access logs (S3)
+aws elbv2 modify-load-balancer-attributes \
+  --load-balancer-arn $ALB \
+  --attributes \
+    Key=access_logs.s3.enabled,Value=true \
+    Key=access_logs.s3.bucket,Value=my-alb-logs \
+    Key=access_logs.s3.prefix,Value=alb-logs
+```
+
+---
+
+## 11. Real-World Architectures
+
+### Architecture 1: Microservices with ALB
+
+```
+Internet Users
+      │
+      ↓
+   (Route 53)
+      │
+      ↓
+  Application LB
+  (DNS: alb....)
+      │
+   Listeners: 443
+   Rules: Path-based
+      │
+  ┌───┴────┬──────────┬─────────┬────────────┐
+  │         │          │         │            │
+  ▼         ▼          ▼         ▼            ▼
+User Svc  Pay Svc  Cart Svc  Inv Svc    Search Svc
+:3001     :3002     :3003     :3004        :3005
+
+Rules:
+/users/* → User Service (port 3001)
+/payments/* → Payment Service (port 3002)
+/cart/* → Cart Service (port 3003)
+/inventory/* → Inventory Service (port 3004)
+/search/* → Search Service (port 3005)
+
+Benefits:
+- Single entry point
+- Service isolation
+- Independent scaling
+- Easy deployment
+```
+
+### Architecture 2: Global Load Balancing
+
+```
+Route 53 (Geolocation Routing)
+    │
+    ├─────────────┬──────────────┤
+    │             │              │
+US East       EU West       Asia Pacific
+  ALB           ALB             ALB
+   │             │               │
+┌──┴──┐       ┌──┴──┐        ┌──┴──┐
+│ Web │       │ Web │        │ Web │
+│ Inst│       │ Inst│        │ Inst│
+└─────┘       └─────┘        └─────┘
+
+Routing:
+- US users → US East ALB
+- EU users → EU West ALB
+- Asia users → Asia Pacific ALB
+- Automatic failover if region down
+```
+
+---
+
+## 12. Best Practices
+
+### Load Balancer Design
+
+✓ DO:
+- Use ALB for web/microservices (default choice)
+- Use NLB only for extreme performance needs
+- Multi-AZ always for HA
+- Enable access logs for troubleshooting
+- Use security groups (restrict traffic)
+- Enable HTTPS/TLS everywhere
+- Monitor with CloudWatch
+- Auto-scale based on metrics
+
+✗ DON'T:
+- Use single availability zone
+- Leave HTTP unencrypted
+- Use CLB for new applications
+- Forget to configure health checks
+- Leave default security groups
+- Ignore access logs
+- Over-provision capacity
+
+### Security Best Practices
+
+```bash
+# Restrict inbound traffic
+aws ec2 authorize-security-group-ingress \
+  --group-id $SG \
+  --protocol tcp \
+  --port 443 \
+  --cidr 0.0.0.0/0
+
+# Target security group (only from LB)
+aws ec2 authorize-security-group-ingress \
+  --group-id $TARGET_SG \
+  --protocol tcp \
+  --port 8080 \
+  --source-group $LB_SG
+
+# Use latest TLS policies
+aws elbv2 modify-listener \
+  --listener-arn $LISTENER \
+  --ssl-policy ELBSecurityPolicy-TLS13-1-2-2021-06
+```
+
+### Performance Optimization
+
+```bash
+# Cross-zone load balancing
+aws elbv2 modify-load-balancer-attributes \
+  --load-balancer-arn $ALB \
+  --attributes Key=load_balancing.cross_zone.enabled,Value=true
+
+# Connection draining
+aws elbv2 modify-target-group-attributes \
+  --target-group-arn $TG \
+  --attributes Key=deregistration_delay.timeout_seconds,Value=300
+
+# Sticky sessions
+aws elbv2 modify-target-group-attributes \
+  --target-group-arn $TG \
+  --attributes \
+    Key=stickiness.enabled,Value=true \
+    Key=stickiness.type,Value=lb_cookie \
+    Key=stickiness.lb_cookie.duration_seconds,Value=86400
+```
+
+---
+
+## 13. Top 5 Interview Questions
+
+### Question 1: When to Use ALB vs NLB vs CLB?
+
+**Difficulty:** Medium
+
+**The Question:**
+"Describe scenarios where you would choose Application Load Balancer (ALB), Network Load Balancer (NLB), or Classic Load Balancer (CLB). Include performance, use cases, and cost considerations."
+
+**Model Answer:**
+
+**ALB - Application Load Balancer (DEFAULT CHOICE)**
+- Use for: Web applications, microservices, containers (ECS/Fargate)
+- Performance: ~10 million RPS, ~100ms latency
+- Cost: ~$0.022/hour + LCU charges (~$50-100/month typical)
+- Example: E-commerce with /api/* → API servers, /static/* → CDN, /* → Web servers
+- Benefits: Intelligent routing, Layer 7 awareness, 70% of deployments
+
+**NLB - Network Load Balancer (EXTREME PERFORMANCE)**
+- Use for: Gaming, real-time apps, IoT, DNS, financial trading
+- Performance: 50+ million RPS, ~100 microseconds latency
+- Cost: ~$0.006/hour + NLCU charges (~$40-80/month typical)
+- Example: Gaming - 10M concurrent players, UDP port 9000, flow hash routing
+- Benefits: Ultra-low latency, UDP support, preserve source IP
+
+**CLB - Classic Load Balancer (LEGACY)**
+- Use for: Legacy applications, very simple deployments
+- Performance: 30,000 concurrent connections, older technology
+- Cost: ~$0.025/hour (~$60-90/month)
+- Example: Monolithic app from 2005-2015 era
+- Migration: CLB → ALB (modern) or CLB → NLB (extreme perf)
+
+**Decision Flowchart:**
+```
+Need Layer 7 intelligence?
+├─ YES → ALB (70% of cases)
+└─ NO:
+   Need extreme performance?
+   ├─ YES → NLB
+   └─ NO:
+      Legacy application?
+      ├─ YES → CLB (plan migration)
+      └─ NO → ALB (recommended)
+```
+
+---
+
+### Question 2: Design High-Availability Load Balancing for Microservices
+
+**Difficulty:** High
+
+**The Question:**
+"Design a highly available load balancing solution for a microservices architecture with 10+ services running on containers. Include failover, auto-scaling, health checks, and monitoring."
+
+**Model Answer:**
+
+**Architecture Overview:**
+- Route 53: DNS + geolocation failover
+- Primary: US East ALB + Auto Scaling
+- Secondary: EU West ALB (failover)
+- Multiple target groups (one per microservice)
+- Health checks: 30-second interval
+- Auto-scaling: 2-20 instances per service
+- Monitoring: CloudWatch alarms on unhealthy targets, latency, 5xx errors
+
+**Key Components:**
+
+1. **ALB Setup** (Multi-AZ)
+   - subnets: us-east-1a, us-east-1b
+   - scheme: internet-facing
+   - cross-zone: enabled (even distribution)
+   - access-logs: S3 bucket for debugging
+
+2. **Target Groups** (One per Service)
+   - User Service: port 3001, /health endpoint
+   - API Service: port 3002, /health endpoint
+   - Payment Service: port 3003, /health endpoint
+   - Each with health checks: interval 30s, timeout 5s, healthy 2x, unhealthy 3x
+
+3. **Custom Health Endpoint**
+   ```
+   Checks:
+   - Database connection
+   - Redis cache connection
+   - Disk space < 90%
+   - Memory usage < 85%
+   Returns: 200 if healthy, 503 if unhealthy
+   ```
+
+4. **Listener & Rules**
+   - Port 443 HTTPS: TLS termination
+   - Path-based routing:
+     - /users/* → User Service
+     - /api/* → API Service
+     - /payments/* → Payment Service
+   - Port 80 HTTP → redirect to HTTPS
+
+5. **Auto Scaling Groups**
+   - User Service ASG: 2-20 instances, CPU > 70%
+   - API Service ASG: 2-15 instances, CPU > 70%
+   - Payment Service ASG: 2-10 instances, CPU > 70%
+   - Health check type: ELB (removes unhealthy instances)
+   - Grace period: 300 seconds
+
+6. **Monitoring & Alarms**
+   - UnHealthyHostCount alarm: > 0 instances
+   - TargetResponseTime alarm: > 1 second
+   - HTTPCode_Target_5XX_Count alarm: > 100
+   - ASGAverageCPUUtilization: > 70% (auto-scale out)
+
+7. **Route 53 Failover**
+   - Primary: us-east-1 ALB (PRIMARY)
+   - Secondary: eu-west-1 ALB (SECONDARY)
+   - Health checks: Evaluates ALB health
+   - Failover: < 30 seconds automatic failover
+   - RTO: < 30 seconds
+   - RPO: 0 (real-time replication)
+
+**Operational Metrics:**
+- Availability: 99.99% uptime SLA
+- Scalability: Handle 10x traffic spikes
+- Performance: 150-300ms end-to-end latency
+- Recovery: Automatic failover in < 30 seconds
+
+---
+
+### Question 3: Troubleshoot Slow Load Balancer Performance
+
+**Difficulty:** High
+
+**The Question:**
+"Users report your ALB is responding slowly. Walk through your troubleshooting steps to identify bottlenecks. Is it the ALB itself, the network, or the backend targets?"
+
+**Model Answer:**
+
+**Systematic Troubleshooting:**
+
+1. **Check ALB Metrics**
+   - TargetResponseTime: If > 500ms → backend issue (not ALB)
+   - ProcessedBytes: Check for sudden spikes
+   - ActiveConnectionCount: Monitor connections
+   - Expected: 50-200ms
+
+2. **Check Target Health**
+   - aws elbv2 describe-target-health
+   - Expected: 2/3+ targets healthy
+   - If unhealthy: Add more capacity
+
+3. **Check ALB Capacity (LCU)**
+   - ConsumedLCUs: Monitor resource usage
+   - If at limit: Consider NLB
+
+4. **Network Diagnostics**
+   - DNS resolution: <10ms expected
+   - TCP connect: 5-20ms expected
+   - TLS handshake: 10-30ms expected
+   - If high: Network issue (not ALB)
+
+5. **Backend Target Performance**
+   - SSH into target
+   - top: CPU usage
+   - free -h: Memory usage
+   - iostat: Disk I/O
+   - Check app logs for errors
+   - Test health endpoint: Should be <50ms
+
+6. **ALB Listener Rules**
+   - Complex rules → simplify
+   - Too many conditions → optimize
+
+7. **Sticky Sessions Issue**
+   - If enabled: Check connection distribution
+   - If one target slow → all users slow
+   - Uneven load possible
+
+**Diagnosis Table:**
+| Latency | Issue | Fix |
+|---------|-------|-----|
+| <100ms | ALB OK | Good performance |
+| 100-500ms | ALB OK | Scale targets if needed |
+| >500ms | Backend issue | Add targets, scale instances |
+| DNS >50ms | Network issue | Check Route 53, DNS records |
+
+**Resolution Steps:**
+- Backend slow: Add targets (set desired capacity higher)
+- ALB at capacity: Monitor LCU, consider NLB
+- Network issue: Check route table, security groups, connectivity
+
+---
+
+### Question 4: Design Zero-Downtime Deployment
+
+**Difficulty:** High
+
+**The Question:**
+"Design a deployment strategy using ALB that allows you to deploy new versions of an application with zero downtime. Include rollback capability, gradual traffic shifting, and automated rollout."
+
+**Model Answer:**
+
+**Blue-Green Deployment Strategy:**
+
+**Setup:**
+1. Two target groups: Blue (current) and Green (new)
+2. Deploy new version to Green
+3. Run health checks
+4. Shift traffic gradually (canary) or instantly
+5. Keep Blue running for quick rollback
+
+**Step-by-Step Process:**
+
+1. **Create Target Groups**
+   - Blue TG: Current v1.0, 3 instances
+   - Green TG: New v2.0, 3 instances
+
+2. **Configure Listener**
+   - Default: Forward to Blue (100%)
+   - All traffic → Blue version initially
+
+3. **Validate Green**
+   - Wait for instances healthy
+   - Smoke test endpoints
+   - Verify critical paths
+
+4. **Gradually Shift Traffic (Canary)**
+   ```
+   Time    Blue   Green   Duration
+   ────────────────────────────
+   0:00    100%   0%      Start
+   0:05    90%    10%     5 minutes
+   0:15    80%    20%     10 minutes
+   0:30    50%    50%     20 minutes (monitor heavily)
+   1:00    25%    75%     15 minutes
+   1:30    0%     100%    Final: Complete
+   ```
+
+5. **Monitor During Deploy**
+   - HTTP 5xx error rate
+   - Response time (p99)
+   - Healthy target count
+   - Request latency
+
+6. **CloudWatch Alarms**
+   - Error rate > 5% → trigger rollback
+   - Latency > 1s → alert
+   - 5xx count > 100 → alert
+
+7. **Success: Complete Deployment**
+   - Final traffic: Blue 0% → Green 100%
+   - Deregister Blue targets
+   - Terminate Blue instances
+   - Green becomes new production
+
+8. **Failure: Immediate Rollback**
+   - Error rate detected high
+   - Revert traffic: Blue 100%, Green 0%
+   - Deregister Green
+   - Blue continues serving
+
+**Alternative: Instant Cutover**
+- For low-risk changes: Switch all traffic at once
+- Faster but riskier
+- Must have good monitoring and rollback plan
+
+**Database Migration Strategy:**
+- Schema changes: Add columns, don't remove
+- Backward compatible API responses
+- Deploy order: Code → Schema → Code
+- Ensures Blue and Green can co-exist
+
+---
+
+### Question 5: Compare ALB Sticky Sessions vs Session Affinity
+
+**Difficulty:** Medium
+
+**The Question:**
+"Explain sticky sessions in ALB. When should you use them? What are the tradeoffs? How does session affinity in NLB differ?"
+
+**Model Answer:**
+
+**Sticky Sessions Explained:**
+
+What: ALB remembers which target served user
+How: Sets cookie or uses source IP
+Result: Same user → always same backend
+
+**Problem Without Sticky:**
+```
+Request 1 → Server A (session created)
+Request 2 → Server B (no session, login required!)
+Request 3 → Server C (no session again!)
+Result: User frustration, repeated logins
+```
+
+**Solution With Sticky:**
+```
+Request 1 → Server A (session created, cookie set)
+Request 2 → Server A (same server, session available)
+Request 3 → Server A (consistent experience)
+Result: User happy, continuous experience
+```
+
+**ALB Sticky Session Types:**
+
+1. **Duration-Based** (Recommended)
+   - Cookie: AWSALB (HttpOnly, Secure, SameSite)
+   - Duration: 1-7 days (default 1 day)
+   - Browser stores cookie 1 day
+   - ALB reads cookie, routes to same target
+   - After 1 day: Can go to different target
+
+2. **Application-Controlled**
+   - Cookie: Custom name (e.g., SESSIONID)
+   - ALB reads custom cookie
+   - Routes same SESSIONID to same target
+   - Duration: Whatever app sets
+
+**When to Use:**
+✓ User login in memory (not replicated)
+✓ Shopping cart in app cache
+✓ Real-time data (websocket state)
+✓ Legacy monolithic apps
+✓ Session not in database
+
+✗ Stateless microservices
+✗ Session in Redis/DynamoDB
+✗ Horizontal scaling important
+✗ Mobile apps (may lose connection)
+✗ High availability critical
+
+**Tradeoffs:**
+
+Advantages:
+✓ Simple to implement
+✓ Works with legacy apps
+✓ No code changes needed
+
+Disadvantages:
+✗ Limits load distribution (uneven load)
+✗ Server failure = session loss
+✗ Can't scale horizontally easily
+✗ Cost impact (need more servers)
+
+**NLB Session Affinity (Flow Hash):**
+
+- Layer 4 (no cookies)
+- Flow = Source IP + Source Port + Dest IP + Dest Port + Protocol
+- Same flow → always same server
+- Perfect for: Gaming, VoIP, streaming
+- Problem: IP changes (WiFi/LTE) = lost connection
+
+**Comparison:**
+
+| Feature | ALB Sticky | NLB Flow Hash |
+|---------|-----------|---------------|
+| Layer | 7 (App) | 4 (Transport) |
+| Mechanism | Cookie | Flow hash |
+| Duration | Configurable | Connection |
+| Gaming | No | Yes (perfect) |
+| Web Apps | Yes (good) | No |
+| Mobile Friendly | Medium | Poor |
+| Server Failover | Session lost | New server OK |
+
+**Modern Alternative: External Session Store**
+
+Best Practice: Externalize Sessions
+- Don't store in memory
+- Use: Redis, DynamoDB, Memcached, Database
+
+Benefits:
+✓ No sticky sessions needed
+✓ Full horizontal scaling
+✓ Server crash: session not lost
+✓ Easy deployment/rollback
+✓ Better load distribution
+
+Example: Redis Session Store
+```
+Login: Store in Redis (SessionID)
+Browse: Any server queries Redis
+Result: Full session available
+No "session not found" errors
+```
+
+**Recommendation:**
+
+- **New Applications**: External session store + no sticky sessions
+- **Existing Applications**: Evaluate cost/benefit, plan migration
+- **Real-time/Gaming**: NLB with flow hash or external store + ALB
+- **Legacy Apps**: Sticky sessions acceptable, plan modernization
+
+---
+
+## Summary
+
+Elastic Load Balancing provides:
+
+✅ **High Availability** - Distribute traffic across multiple targets
+✅ **Automatic Failover** - Deregister unhealthy targets
+✅ **Auto-scaling** - Integrate with Auto Scaling Groups
+✅ **Intelligent Routing** - ALB path/host routing, NLB flow-based
+✅ **SSL/TLS Termination** - HTTPS at load balancer
+✅ **Monitoring** - CloudWatch metrics and access logs
+✅ **Global Reach** - Works with Route 53 for global distribution
+✅ **Cost-effective** - Pay only for capacity used
+
+---
+
+**Document Version:** 1.0
+**Last Updated:** November 30, 2025
+**Coverage:** Complete guide on Elastic Load Balancing with detailed examples, architectures, and top 5 interview questions with comprehensive model answers.
