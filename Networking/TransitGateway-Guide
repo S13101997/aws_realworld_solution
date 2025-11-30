@@ -1,0 +1,1947 @@
+# AWS Transit Gateway — Hub-and-Spoke Network Architecture
+
+**Complete Guide with Examples and Top 5 Interview Questions**
+
+---
+
+## Table of Contents
+
+1. Overview
+2. Core Concepts
+3. Transit Gateway Attachments
+4. Routing and Route Tables
+5. Route Propagation
+6. Multi-Region Connectivity
+7. Network Segmentation
+8. Step-by-Step Examples
+9. Advanced Features
+10. Troubleshooting
+11. Best Practices
+12. Top 5 Interview Questions
+
+---
+
+## 1. Overview
+
+AWS Transit Gateway is a service that simplifies connecting Amazon VPCs and on-premises networks. It acts as a hub that controls how traffic is routed among all the connected networks, eliminating the need for complex peering relationships.
+
+### Key Characteristics
+
+- **Centralized Hub** - Single point of connectivity for all networks
+- **Simplifies Architecture** - Eliminates VPC-to-VPC peering
+- **Multi-Region Support** - Connect gateways across regions
+- **On-Premises Integration** - Direct Connect and VPN attachments
+- **Network Segmentation** - Route tables for isolation
+- **Scalability** - Handles thousands of VPC attachments
+- **High Availability** - Built-in redundancy and failover
+- **Monitoring** - CloudWatch metrics and Flow Logs
+
+### Transit Gateway vs VPC Peering
+
+| Feature | Transit Gateway | VPC Peering |
+|---------|---|---|
+| Connections | Hub-and-spoke | Mesh (each to each) |
+| Scalability | 1000+ attachments | Hundreds of peerings |
+| Management | Centralized | Decentralized |
+| Setup Complexity | Simple | Complex at scale |
+| Multi-region | Native support | Manual setup |
+| On-premises | Direct integration | Via VPN |
+| Monitoring | Centralized | Per-peering |
+| Cost | Per attachment/hour | Per peering connection |
+| Network Segmentation | Via route tables | None (flat network) |
+| Transit Routes | Supported | Not supported |
+| DNS Resolution | Enhanced | Basic |
+
+---
+
+## 2. Core Concepts
+
+### Transit Gateway Structure
+
+```
+┌─────────────────────────────────────────┐
+│         Transit Gateway (TGW)           │
+│        (Hub - Central Router)           │
+├─────────────────────────────────────────┤
+│                                         │
+│  Route Tables:                          │
+│  ├─ Production Route Table              │
+│  ├─ Development Route Table             │
+│  └─ Shared Route Table                  │
+│                                         │
+└─────┬─────────────┬─────────────┬───────┘
+      │             │             │
+   ┌──┴──┐      ┌───┴───┐    ┌───┴────┐
+   │VPC1 │      │VPC2   │    │On-Prem │
+   │Prod │      │Dev    │    │DC      │
+   └─────┘      └───────┘    └────────┘
+```
+
+### Core Components
+
+**1. Transit Gateway**
+- Central hub for network routing
+- Created per region
+- Can be peered across regions
+- Supports multiple attachments
+
+**2. Transit Gateway Attachments**
+- VPC attachments (subnets)
+- Direct Connect attachments
+- VPN connections
+- Transit Gateway peering
+
+**3. Route Tables**
+- Defines routing policies
+- Attached to TGW attachments
+- Can be segmented by function/env
+- Supports propagation and static routes
+
+**4. Transit Gateway Routes**
+- Specifies traffic destinations
+- Can be static or dynamic (propagated)
+- Supports CIDR blocks
+- Can be blackholed
+
+---
+
+## 3. Transit Gateway Attachments
+
+### Creating a Transit Gateway
+
+```bash
+# Create Transit Gateway
+TGW=$(aws ec2 create-transit-gateway \
+  --description "Production Transit Gateway" \
+  --options "AmazonSideAsn=64512,DefaultRouteTableAssociation=enable,DefaultRouteTablePropagation=enable,DnsSupport=enable,VpnEcnSupport=enable" \
+  --tag-specifications 'ResourceType=transit-gateway,Tags=[{Key=Name,Value=prod-tgw},{Key=Environment,Value=Production}]' \
+  --query 'TransitGateway.TransitGatewayId' \
+  --output text)
+
+echo "Transit Gateway ID: $TGW"
+
+# Response:
+{
+  "TransitGateway": {
+    "TransitGatewayId": "tgw-12345678",
+    "TransitGatewayArn": "arn:aws:ec2:us-east-1:123456789012:transit-gateway/tgw-12345678",
+    "State": "available",
+    "OwnerId": "123456789012",
+    "Description": "Production Transit Gateway",
+    "CreationTime": "2025-11-30T10:00:00.000Z",
+    "Options": {
+      "AmazonSideAsn": 64512,
+      "TransitGatewayCidrBlocks": [],
+      "DefaultRouteTableAssociation": "enable",
+      "AssociationDefaultRouteTableId": "tgw-rtb-12345678",
+      "DefaultRouteTablePropagation": "enable",
+      "PropagationDefaultRouteTableId": "tgw-rtb-12345678",
+      "DnsSupport": "enable",
+      "VpnEcnSupport": "enable"
+    },
+    "Tags": [
+      {"Key": "Name", "Value": "prod-tgw"},
+      {"Key": "Environment", "Value": "Production"}
+    ]
+  }
+}
+```
+
+### VPC Attachment
+
+Connects a VPC to the Transit Gateway.
+
+```bash
+# Create VPC attachment
+VPC_ATTACHMENT=$(aws ec2 create-transit-gateway-vpc-attachment \
+  --transit-gateway-id $TGW \
+  --vpc-id vpc-12345678 \
+  --subnet-ids subnet-11111111 subnet-22222222 \
+  --tag-specifications 'ResourceType=transit-gateway-attachment,Tags=[{Key=Name,Value=vpc1-prod-attachment}]' \
+  --query 'TransitGatewayVpcAttachment.TransitGatewayAttachmentId' \
+  --output text)
+
+echo "VPC Attachment ID: $VPC_ATTACHMENT"
+
+# Response:
+{
+  "TransitGatewayVpcAttachment": {
+    "TransitGatewayAttachmentId": "tgw-attach-12345678",
+    "TransitGatewayId": "tgw-12345678",
+    "VpcId": "vpc-12345678",
+    "State": "pending",
+    "SubnetIds": [
+      "subnet-11111111",
+      "subnet-22222222"
+    ],
+    "CreationTime": "2025-11-30T10:05:00.000Z",
+    "Tags": [
+      {"Key": "Name", "Value": "vpc1-prod-attachment"}
+    ]
+  }
+}
+
+# Wait for attachment to be available
+aws ec2 describe-transit-gateway-attachments \
+  --filters "Name=transit-gateway-attachment-id,Values=$VPC_ATTACHMENT" \
+  --query 'TransitGatewayAttachments[0].State'
+```
+
+**Subnet Considerations:**
+- Minimum: 1 subnet (for redundancy, use 2+ in different AZs)
+- Maximum: All subnets in VPC
+- Best Practice: Private subnets (not public for security)
+- Route: 10.0.0.0/16 via Transit Gateway
+
+### Direct Connect Attachment
+
+```bash
+# Create Direct Connect attachment
+DX_ATTACHMENT=$(aws ec2 create-transit-gateway-direct-connect-gateway-attachment \
+  --transit-gateway-id $TGW \
+  --direct-connect-gateway-id dcgw-12345678 \
+  --query 'TransitGatewayAttachment.TransitGatewayAttachmentId' \
+  --output text)
+
+echo "Direct Connect Attachment ID: $DX_ATTACHMENT"
+
+# Characteristics:
+# - Connects on-premises networks via Direct Connect
+# - Supports multiple Direct Connect locations
+# - Provides on-premises connectivity
+# - BGP dynamic routing
+```
+
+### VPN Attachment
+
+```bash
+# Create VPN attachment
+VPN_ATTACHMENT=$(aws ec2 create-transit-gateway-vpn-attachment \
+  --transit-gateway-id $TGW \
+  --customer-gateway-id cgw-12345678 \
+  --type ipsec.1 \
+  --query 'TransitGatewayAttachment.TransitGatewayAttachmentId' \
+  --output text)
+
+echo "VPN Attachment ID: $VPN_ATTACHMENT"
+
+# Characteristics:
+# - Connects remote offices/employees
+# - Quick setup (minutes vs weeks for Direct Connect)
+# - Cost-effective for non-critical workloads
+# - IPSec encryption
+```
+
+### Transit Gateway Peering
+
+```bash
+# Create peering between regions
+PEERING=$(aws ec2 create-transit-gateway-peering-attachment \
+  --transit-gateway-id tgw-us-east-1 \
+  --peer-transit-gateway-id tgw-eu-west-1 \
+  --peer-account-id 123456789012 \
+  --peer-region eu-west-1 \
+  --query 'TransitGatewayPeeringAttachment.TransitGatewayAttachmentId' \
+  --output text)
+
+echo "Peering Attachment ID: $PEERING"
+
+# Accept peering (in peer region)
+aws ec2 accept-transit-gateway-peering-attachment \
+  --transit-gateway-attachment-id $PEERING \
+  --region eu-west-1
+
+# Result: Connects two Transit Gateways in different regions
+```
+
+---
+
+## 4. Routing and Route Tables
+
+### Transit Gateway Route Tables
+
+Transit Gateway uses separate route tables for organizing traffic flow.
+
+```bash
+# List route tables
+aws ec2 describe-transit-gateway-route-tables \
+  --filters "Name=transit-gateway-id,Values=$TGW" \
+  --query 'TransitGatewayRouteTables[*].[TransitGatewayRouteTableId,State,Tags[?Key==`Name`].Value|[0]]' \
+  --output table
+
+# Response:
+# tgw-rtb-prod-prod    available  prod-route-table
+# tgw-rtb-dev-dev      available  dev-route-table
+# tgw-rtb-shared-shar  available  shared-route-table
+```
+
+### Create Segmented Route Tables
+
+```bash
+# Create Production Route Table
+PROD_RT=$(aws ec2 create-transit-gateway-route-table \
+  --transit-gateway-id $TGW \
+  --tag-specifications 'ResourceType=transit-gateway-route-table,Tags=[{Key=Name,Value=prod-routes}]' \
+  --query 'TransitGatewayRouteTable.TransitGatewayRouteTableId' \
+  --output text)
+
+# Create Development Route Table
+DEV_RT=$(aws ec2 create-transit-gateway-route-table \
+  --transit-gateway-id $TGW \
+  --tag-specifications 'ResourceType=transit-gateway-route-table,Tags=[{Key=Name,Value=dev-routes}]' \
+  --query 'TransitGatewayRouteTable.TransitGatewayRouteTableId' \
+  --output text)
+
+# Create Shared Route Table (for services)
+SHARED_RT=$(aws ec2 create-transit-gateway-route-table \
+  --transit-gateway-id $TGW \
+  --tag-specifications 'ResourceType=transit-gateway-route-table,Tags=[{Key=Name,Value=shared-routes}]' \
+  --query 'TransitGatewayRouteTable.TransitGatewayRouteTableId' \
+  --output text)
+
+echo "Route Tables Created:"
+echo "Production: $PROD_RT"
+echo "Development: $DEV_RT"
+echo "Shared: $SHARED_RT"
+```
+
+### Associate Attachments to Route Tables
+
+```bash
+# Associate VPC attachment to Production route table
+aws ec2 associate-transit-gateway-route-table \
+  --transit-gateway-route-table-id $PROD_RT \
+  --transit-gateway-attachment-id $VPC_ATTACHMENT
+
+# Associate attachment to route table means:
+# - VPC attachment will use this route table
+# - Routes in table determine where traffic goes
+# - Can only have one route table per attachment
+```
+
+### Create Routes
+
+```bash
+# Static route: On-premises via Direct Connect
+aws ec2 create-transit-gateway-route \
+  --transit-gateway-route-table-id $PROD_RT \
+  --destination-cidr-block 10.0.0.0/8 \
+  --transit-gateway-attachment-id $DX_ATTACHMENT
+
+# Route to another VPC
+aws ec2 create-transit-gateway-route \
+  --transit-gateway-route-table-id $PROD_RT \
+  --destination-cidr-block 10.1.0.0/16 \
+  --transit-gateway-attachment-id $VPC2_ATTACHMENT
+
+# Blackhole route (block traffic)
+aws ec2 create-transit-gateway-route \
+  --transit-gateway-route-table-id $PROD_RT \
+  --destination-cidr-block 192.168.0.0/16 \
+  --blackhole
+
+# List routes
+aws ec2 search-transit-gateway-routes \
+  --transit-gateway-route-table-id $PROD_RT \
+  --query 'Routes[*].[DestinationCidrBlock,Type,State,TransitGatewayAttachments[0].TransitGatewayAttachmentId]' \
+  --output table
+```
+
+---
+
+## 5. Route Propagation
+
+Route propagation automatically adds routes based on attachment advertisements.
+
+### Enable Route Propagation
+
+```bash
+# Enable propagation for attachment
+aws ec2 enable-transit-gateway-route-table-propagation \
+  --transit-gateway-route-table-id $PROD_RT \
+  --transit-gateway-attachment-id $VPC_ATTACHMENT
+
+# Result:
+# VPC attachment automatically advertises its CIDR block (10.1.0.0/16)
+# Route added to PROD_RT: 10.1.0.0/16 → VPC attachment
+
+# For Direct Connect (BGP learned routes):
+aws ec2 enable-transit-gateway-route-table-propagation \
+  --transit-gateway-route-table-id $PROD_RT \
+  --transit-gateway-attachment-id $DX_ATTACHMENT
+
+# Result:
+# All on-premises routes (10.0.0.0/8) automatically propagated
+# No manual route creation needed for DX or on-prem additions
+```
+
+### Disable Route Propagation
+
+```bash
+# Disable propagation (removes auto-learned routes)
+aws ec2 disable-transit-gateway-route-table-propagation \
+  --transit-gateway-route-table-id $PROD_RT \
+  --transit-gateway-attachment-id $VPC_ATTACHMENT
+
+# Use case:
+# - Prevent route advertisements
+# - Enforce static routing only
+# - Isolate development environment
+```
+
+---
+
+## 6. Multi-Region Connectivity
+
+### Regional Architecture
+
+```
+US-East-1 Region:
+┌──────────────────────┐
+│   Transit Gateway    │
+│    (tgw-us-east)     │
+├──────────────────────┤
+│  ├─ VPC-1 (Prod)    │
+│  ├─ VPC-2 (Dev)     │
+│  └─ DX Attachment   │
+└──────────────────────┘
+         │
+         │ (Peering Link)
+         │
+         ↓
+EU-West-1 Region:
+┌──────────────────────┐
+│   Transit Gateway    │
+│    (tgw-eu-west)     │
+├──────────────────────┤
+│  ├─ VPC-3 (Prod)    │
+│  ├─ VPC-4 (Dev)     │
+│  └─ DX Attachment   │
+└──────────────────────┘
+```
+
+### Enable Multi-Region Routing
+
+```bash
+# Create peering attachment (from us-east-1)
+PEERING=$(aws ec2 create-transit-gateway-peering-attachment \
+  --transit-gateway-id tgw-us-east-1 \
+  --peer-transit-gateway-id tgw-eu-west-1 \
+  --peer-account-id 123456789012 \
+  --peer-region eu-west-1 \
+  --region us-east-1 \
+  --query 'TransitGatewayPeeringAttachment.TransitGatewayAttachmentId' \
+  --output text)
+
+echo "Peering Attachment (pending): $PEERING"
+
+# Accept peering (in eu-west-1)
+aws ec2 accept-transit-gateway-peering-attachment \
+  --transit-gateway-attachment-id $PEERING \
+  --region eu-west-1
+
+# Create route in us-east-1 route table to eu-west-1 networks
+aws ec2 create-transit-gateway-route \
+  --transit-gateway-route-table-id tgw-rtb-us-east-prod \
+  --destination-cidr-block 10.100.0.0/16 \
+  --transit-gateway-attachment-id $PEERING \
+  --region us-east-1
+
+# Enable propagation for multi-region discovery
+aws ec2 enable-transit-gateway-route-table-propagation \
+  --transit-gateway-route-table-id tgw-rtb-us-east-prod \
+  --transit-gateway-attachment-id $PEERING \
+  --region us-east-1
+```
+
+---
+
+## 7. Network Segmentation
+
+### Isolation Strategy
+
+```
+Example: Compliance Isolation
+
+┌─────────────────────────────────────┐
+│      Transit Gateway                │
+├─────────────────────────────────────┤
+│                                     │
+│  Route Table: Production            │
+│  ├─ VPC-1 (Prod)                   │
+│  ├─ VPC-2 (Prod)                   │
+│  ├─ Route: 10.0.0.0/8 → On-Prem   │
+│  └─ Route: 10.100.0.0/16 → DX     │
+│                                     │
+│  Route Table: Development           │
+│  ├─ VPC-3 (Dev)                    │
+│  ├─ VPC-4 (Dev)                    │
+│  └─ Route: 10.10.0.0/8 → On-Prem  │
+│     (No access to Prod or On-Prem) │
+│                                     │
+│  Route Table: Shared                │
+│  ├─ VPC-5 (Logging)                │
+│  ├─ VPC-6 (DNS)                    │
+│  └─ No restrictions (accessible)   │
+│                                     │
+└─────────────────────────────────────┘
+```
+
+### Implementation
+
+```bash
+# Production route table (only prod networks)
+PROD_RT=$(aws ec2 create-transit-gateway-route-table \
+  --transit-gateway-id $TGW \
+  --query 'TransitGatewayRouteTable.TransitGatewayRouteTableId' \
+  --output text)
+
+# Development route table (isolated)
+DEV_RT=$(aws ec2 create-transit-gateway-route-table \
+  --transit-gateway-id $TGW \
+  --query 'TransitGatewayRouteTable.TransitGatewayRouteTableId' \
+  --output text)
+
+# Shared route table (all can access)
+SHARED_RT=$(aws ec2 create-transit-gateway-route-table \
+  --transit-gateway-id $TGW \
+  --query 'TransitGatewayRouteTable.TransitGatewayRouteTableId' \
+  --output text)
+
+# Associate production VPCs to production route table
+aws ec2 associate-transit-gateway-route-table \
+  --transit-gateway-route-table-id $PROD_RT \
+  --transit-gateway-attachment-id $VPC_PROD_1
+
+aws ec2 associate-transit-gateway-route-table \
+  --transit-gateway-route-table-id $PROD_RT \
+  --transit-gateway-attachment-id $VPC_PROD_2
+
+# Associate dev VPCs to dev route table
+aws ec2 associate-transit-gateway-route-table \
+  --transit-gateway-route-table-id $DEV_RT \
+  --transit-gateway-attachment-id $VPC_DEV_1
+
+aws ec2 associate-transit-gateway-route-table \
+  --transit-gateway-route-table-id $DEV_RT \
+  --transit-gateway-attachment-id $VPC_DEV_2
+
+# Production route table: Route to on-premises
+aws ec2 create-transit-gateway-route \
+  --transit-gateway-route-table-id $PROD_RT \
+  --destination-cidr-block 10.0.0.0/8 \
+  --transit-gateway-attachment-id $DX_ATTACH
+
+# Development route table: No on-premises access (blackhole or no route)
+# Result: Dev VPCs cannot reach on-premises networks
+```
+
+### Shared Services Access
+
+```bash
+# Common pattern: Shared services accessible to all
+
+# Associate shared VPCs to shared route table
+aws ec2 associate-transit-gateway-route-table \
+  --transit-gateway-route-table-id $SHARED_RT \
+  --transit-gateway-attachment-id $VPC_LOGGING
+
+aws ec2 associate-transit-gateway-route-table \
+  --transit-gateway-route-table-id $SHARED_RT \
+  --transit-gateway-attachment-id $VPC_DNS
+
+# Add routes from production to shared services
+aws ec2 create-transit-gateway-route \
+  --transit-gateway-route-table-id $PROD_RT \
+  --destination-cidr-block 10.50.0.0/16 \
+  --transit-gateway-attachment-id $VPC_LOGGING
+
+# Add routes from dev to shared services
+aws ec2 create-transit-gateway-route \
+  --transit-gateway-route-table-id $DEV_RT \
+  --destination-cidr-block 10.50.0.0/16 \
+  --transit-gateway-attachment-id $VPC_LOGGING
+
+# Result: Prod and Dev can access logging VPC, but not each other
+```
+
+---
+
+## 8. Step-by-Step Examples
+
+### Example 1: Setup Basic Hub-and-Spoke
+
+```bash
+#!/bin/bash
+set -e
+
+echo "=== Step 1: Create Transit Gateway ==="
+TGW=$(aws ec2 create-transit-gateway \
+  --description "Hub-and-Spoke Transit Gateway" \
+  --options "AmazonSideAsn=64512,DefaultRouteTableAssociation=enable,DefaultRouteTablePropagation=enable,DnsSupport=enable,VpnEcnSupport=enable" \
+  --query 'TransitGateway.TransitGatewayId' \
+  --output text)
+
+echo "Transit Gateway ID: $TGW"
+echo "Status: Creating (wait 1-2 minutes)"
+sleep 30
+
+echo ""
+echo "=== Step 2: Create VPC Attachments ==="
+
+# VPC 1 (Production)
+VPC1_ATTACH=$(aws ec2 create-transit-gateway-vpc-attachment \
+  --transit-gateway-id $TGW \
+  --vpc-id vpc-prod-001 \
+  --subnet-ids subnet-prod-1a subnet-prod-1b \
+  --query 'TransitGatewayVpcAttachment.TransitGatewayAttachmentId' \
+  --output text)
+
+echo "VPC-1 (Prod) Attachment: $VPC1_ATTACH"
+
+# VPC 2 (Development)
+VPC2_ATTACH=$(aws ec2 create-transit-gateway-vpc-attachment \
+  --transit-gateway-id $TGW \
+  --vpc-id vpc-dev-001 \
+  --subnet-ids subnet-dev-1a subnet-dev-1b \
+  --query 'TransitGatewayVpcAttachment.TransitGatewayAttachmentId' \
+  --output text)
+
+echo "VPC-2 (Dev) Attachment: $VPC2_ATTACH"
+
+# VPC 3 (Shared Services)
+VPC3_ATTACH=$(aws ec2 create-transit-gateway-vpc-attachment \
+  --transit-gateway-id $TGW \
+  --vpc-id vpc-shared-001 \
+  --subnet-ids subnet-shared-1a subnet-shared-1b \
+  --query 'TransitGatewayVpcAttachment.TransitGatewayAttachmentId' \
+  --output text)
+
+echo "VPC-3 (Shared) Attachment: $VPC3_ATTACH"
+
+echo ""
+echo "=== Step 3: Wait for Attachments ==="
+for attach_id in $VPC1_ATTACH $VPC2_ATTACH $VPC3_ATTACH; do
+  echo "Waiting for $attach_id..."
+  aws ec2 wait transit-gateway-attachment-available \
+    --filters "Name=transit-gateway-attachment-id,Values=$attach_id"
+  echo "✓ $attach_id available"
+done
+
+echo ""
+echo "=== Step 4: Update VPC Route Tables ==="
+
+# Production VPC route table
+aws ec2 create-route \
+  --route-table-id rtb-prod \
+  --destination-cidr-block 0.0.0.0/0 \
+  --transit-gateway-id $TGW
+
+# Development VPC route table
+aws ec2 create-route \
+  --route-table-id rtb-dev \
+  --destination-cidr-block 0.0.0.0/0 \
+  --transit-gateway-id $TGW
+
+# Shared VPC route table
+aws ec2 create-route \
+  --route-table-id rtb-shared \
+  --destination-cidr-block 0.0.0.0/0 \
+  --transit-gateway-id $TGW
+
+echo "✓ Routes created"
+
+echo ""
+echo "=== Setup Complete ==="
+echo "Transit Gateway: $TGW"
+echo "VPC Attachments: $VPC1_ATTACH, $VPC2_ATTACH, $VPC3_ATTACH"
+echo "All VPCs can now communicate through the Transit Gateway"
+```
+
+### Example 2: Setup Segmented Network
+
+```bash
+#!/bin/bash
+set -e
+
+echo "=== Step 1: Create Segmented Route Tables ==="
+
+TGW="tgw-12345678"
+
+PROD_RT=$(aws ec2 create-transit-gateway-route-table \
+  --transit-gateway-id $TGW \
+  --tag-specifications 'ResourceType=transit-gateway-route-table,Tags=[{Key=Name,Value=prod-routes}]' \
+  --query 'TransitGatewayRouteTable.TransitGatewayRouteTableId' \
+  --output text)
+
+DEV_RT=$(aws ec2 create-transit-gateway-route-table \
+  --transit-gateway-id $TGW \
+  --tag-specifications 'ResourceType=transit-gateway-route-table,Tags=[{Key=Name,Value=dev-routes}]' \
+  --query 'TransitGatewayRouteTable.TransitGatewayRouteTableId' \
+  --output text)
+
+SHARED_RT=$(aws ec2 create-transit-gateway-route-table \
+  --transit-gateway-id $TGW \
+  --tag-specifications 'ResourceType=transit-gateway-route-table,Tags=[{Key=Name,Value=shared-routes}]' \
+  --query 'TransitGatewayRouteTable.TransitGatewayRouteTableId' \
+  --output text)
+
+echo "Production RT: $PROD_RT"
+echo "Development RT: $DEV_RT"
+echo "Shared RT: $SHARED_RT"
+
+echo ""
+echo "=== Step 2: Associate Attachments to Route Tables ==="
+
+# Get attachment IDs (from previous example)
+VPC_PROD_ATTACH="tgw-attach-prod001"
+VPC_DEV_ATTACH="tgw-attach-dev001"
+VPC_SHARED_ATTACH="tgw-attach-shared001"
+DX_ATTACH="tgw-attach-dx001"
+
+# Associate production VPC to production route table
+aws ec2 associate-transit-gateway-route-table \
+  --transit-gateway-route-table-id $PROD_RT \
+  --transit-gateway-attachment-id $VPC_PROD_ATTACH
+
+# Associate dev VPC to dev route table
+aws ec2 associate-transit-gateway-route-table \
+  --transit-gateway-route-table-id $DEV_RT \
+  --transit-gateway-attachment-id $VPC_DEV_ATTACH
+
+# Associate shared VPC to shared route table
+aws ec2 associate-transit-gateway-route-table \
+  --transit-gateway-route-table-id $SHARED_RT \
+  --transit-gateway-attachment-id $VPC_SHARED_ATTACH
+
+echo "✓ Attachments associated"
+
+echo ""
+echo "=== Step 3: Create Routes ==="
+
+# Production can access everything
+aws ec2 create-transit-gateway-route \
+  --transit-gateway-route-table-id $PROD_RT \
+  --destination-cidr-block 10.10.0.0/16 \
+  --transit-gateway-attachment-id $VPC_DEV_ATTACH
+
+aws ec2 create-transit-gateway-route \
+  --transit-gateway-route-table-id $PROD_RT \
+  --destination-cidr-block 10.50.0.0/16 \
+  --transit-gateway-attachment-id $VPC_SHARED_ATTACH
+
+aws ec2 create-transit-gateway-route \
+  --transit-gateway-route-table-id $PROD_RT \
+  --destination-cidr-block 10.0.0.0/8 \
+  --transit-gateway-attachment-id $DX_ATTACH
+
+# Development can access shared services only (not production)
+aws ec2 create-transit-gateway-route \
+  --transit-gateway-route-table-id $DEV_RT \
+  --destination-cidr-block 10.50.0.0/16 \
+  --transit-gateway-attachment-id $VPC_SHARED_ATTACH
+
+# Shared can access both (bidirectional)
+aws ec2 create-transit-gateway-route \
+  --transit-gateway-route-table-id $SHARED_RT \
+  --destination-cidr-block 10.0.0.0/16 \
+  --transit-gateway-attachment-id $VPC_PROD_ATTACH
+
+aws ec2 create-transit-gateway-route \
+  --transit-gateway-route-table-id $SHARED_RT \
+  --destination-cidr-block 10.10.0.0/16 \
+  --transit-gateway-attachment-id $VPC_DEV_ATTACH
+
+echo "✓ Routes created"
+
+echo ""
+echo "=== Segmentation Complete ==="
+echo "Network Topology:"
+echo "  Production: Can access Development, Shared, and On-Premises"
+echo "  Development: Can access Shared services only (isolated from Prod)"
+echo "  Shared: Can access Production and Development"
+```
+
+### Example 3: Multi-Region Setup
+
+```bash
+#!/bin/bash
+set -e
+
+echo "=== Step 1: Create Transit Gateways in Each Region ==="
+
+# US-East Transit Gateway
+TGW_US=$(aws ec2 create-transit-gateway \
+  --description "US-East Transit Gateway" \
+  --region us-east-1 \
+  --query 'TransitGateway.TransitGatewayId' \
+  --output text)
+
+echo "US-East TGW: $TGW_US"
+
+# EU-West Transit Gateway
+TGW_EU=$(aws ec2 create-transit-gateway \
+  --description "EU-West Transit Gateway" \
+  --region eu-west-1 \
+  --query 'TransitGateway.TransitGatewayId' \
+  --output text)
+
+echo "EU-West TGW: $TGW_EU"
+
+echo ""
+echo "=== Step 2: Create Transit Gateway Peering ==="
+
+# Create peering attachment
+PEERING=$(aws ec2 create-transit-gateway-peering-attachment \
+  --transit-gateway-id $TGW_US \
+  --peer-transit-gateway-id $TGW_EU \
+  --peer-account-id 123456789012 \
+  --peer-region eu-west-1 \
+  --region us-east-1 \
+  --query 'TransitGatewayPeeringAttachment.TransitGatewayAttachmentId' \
+  --output text)
+
+echo "Peering Attachment: $PEERING"
+
+# Accept in EU-West
+echo "Accepting peering in EU-West..."
+aws ec2 accept-transit-gateway-peering-attachment \
+  --transit-gateway-attachment-id $PEERING \
+  --region eu-west-1
+
+echo "✓ Peering accepted"
+
+echo ""
+echo "=== Step 3: Configure Routes for Multi-Region ==="
+
+# Get default route tables
+RT_US=$(aws ec2 describe-transit-gateway-route-tables \
+  --filters "Name=transit-gateway-id,Values=$TGW_US" \
+  --region us-east-1 \
+  --query 'TransitGatewayRouteTables[0].TransitGatewayRouteTableId' \
+  --output text)
+
+RT_EU=$(aws ec2 describe-transit-gateway-route-tables \
+  --filters "Name=transit-gateway-id,Values=$TGW_EU" \
+  --region eu-west-1 \
+  --query 'TransitGatewayRouteTables[0].TransitGatewayRouteTableId' \
+  --output text)
+
+# US route to EU networks
+aws ec2 create-transit-gateway-route \
+  --transit-gateway-route-table-id $RT_US \
+  --destination-cidr-block 10.100.0.0/16 \
+  --transit-gateway-attachment-id $PEERING \
+  --region us-east-1
+
+# EU route to US networks
+aws ec2 create-transit-gateway-route \
+  --transit-gateway-route-table-id $RT_EU \
+  --destination-cidr-block 10.0.0.0/16 \
+  --transit-gateway-attachment-id $PEERING \
+  --region eu-west-1
+
+echo "✓ Multi-region routes configured"
+
+echo ""
+echo "=== Multi-Region Setup Complete ==="
+echo "Architecture:"
+echo "  US-East: $TGW_US (VPCs in us-east-1)"
+echo "  EU-West: $TGW_EU (VPCs in eu-west-1)"
+echo "  Peering: Connected via $PEERING"
+echo "  Result: VPCs in both regions can communicate"
+```
+
+---
+
+## 9. Advanced Features
+
+### Transit Gateway Multicast
+
+```bash
+# Enable multicast support
+aws ec2 modify-transit-gateway \
+  --transit-gateway-id $TGW \
+  --description "TGW with Multicast" \
+  --options "Ipv6Support=enable,MulticastSupport=enable"
+
+# Create multicast domain
+aws ec2 create-transit-gateway-multicast-domain \
+  --transit-gateway-id $TGW \
+  --query 'TransitGatewayMulticastDomain.TransitGatewayMulticastDomainId' \
+  --output text
+
+# Use case: Financial market data, video streaming
+```
+
+### Transit Gateway Network Manager
+
+```bash
+# Create global network
+NETWORK=$(aws ec2-network-manager create-global-network \
+  --description "Global Network" \
+  --query 'GlobalNetwork.GlobalNetworkId' \
+  --output text)
+
+# Register Transit Gateways
+aws ec2-network-manager register-transit-gateway \
+  --global-network-id $NETWORK \
+  --transit-gateway-arn $TGW_ARN \
+  --region us-east-1
+
+# Benefits:
+# - Visualize network topology
+# - Monitor connectivity
+# - Diagnose issues
+```
+
+### Prefix Lists
+
+```bash
+# Create managed prefix list
+PREFIXES=$(aws ec2 create-managed-prefix-list \
+  --address-family IPv4 \
+  --max-entries 100 \
+  --prefix-list-name "corporate-networks" \
+  --entries "Cidr=10.0.0.0/8,Description=Corporate" \
+  --query 'PrefixList.PrefixListId' \
+  --output text)
+
+# Use in route creation
+aws ec2 create-transit-gateway-route \
+  --transit-gateway-route-table-id $RT \
+  --destination-prefix-list-id $PREFIXES \
+  --transit-gateway-attachment-id $ATTACH
+```
+
+---
+
+## 10. Troubleshooting
+
+### Attachment State Issues
+
+```bash
+# Check attachment state
+aws ec2 describe-transit-gateway-attachments \
+  --filters "Name=transit-gateway-attachment-id,Values=tgw-attach-12345678" \
+  --query 'TransitGatewayAttachments[0].{State:State,ResourceId:ResourceId,SubnetIds:SubnetIds}' \
+  --output json
+
+# Possible states:
+# - pending: Waiting for acceptance (normal for new attachments)
+# - available: Ready to route traffic
+# - modifying: Configuration change in progress
+# - deleting: Attachment is being removed
+# - deleted: Attachment removed
+# - failed: Error during creation
+# - failing: Error during operation
+# - rejected: Manually rejected
+
+# Troubleshooting failed attachment:
+# 1. Check VPC exists and is accessible
+# 2. Verify subnets are in correct VPC
+# 3. Ensure sufficient capacity
+# 4. Review CloudTrail logs for error details
+```
+
+### Route Not Working
+
+```bash
+# Verify route exists
+aws ec2 search-transit-gateway-routes \
+  --transit-gateway-route-table-id $RT_ID \
+  --filters "Name=state,Values=active,blackhole" \
+  --query 'Routes[*].[DestinationCidrBlock,Type,State,TransitGatewayAttachments[0].TransitGatewayAttachmentId]' \
+  --output table
+
+# Check route associations
+aws ec2 describe-transit-gateway-route-tables \
+  --transit-gateway-route-table-id $RT_ID \
+  --query 'TransitGatewayRouteTables[0].Associations' \
+  --output json
+
+# Troubleshooting missing routes:
+# 1. Verify route is created
+# 2. Confirm attachment is associated to route table
+# 3. Check if propagation is enabled (auto-adds routes)
+# 4. Review attachment state (must be available)
+# 5. Check security groups and NACLs on EC2 side
+```
+
+### VPC Cannot Reach Transit Gateway
+
+```bash
+# From EC2 in VPC, test connectivity:
+ping -c 3 <transit-gateway-ip>
+
+# Check VPC route table:
+aws ec2 describe-route-tables \
+  --route-table-ids rtb-12345678 \
+  --query 'RouteTables[0].Routes' \
+  --output table
+
+# Verify 0.0.0.0/0 or specific CIDR routes to TGW
+# Look for: Target = transit-gateway-id
+
+# Troubleshooting steps:
+# 1. Confirm route exists in VPC route table
+# 2. Check target is correct transit gateway
+# 3. Verify attachment is associated
+# 4. Ensure security groups allow traffic
+# 5. Check NACLs are not blocking
+# 6. Verify destination VPC/resource is reachable
+```
+
+---
+
+## 11. Best Practices
+
+### Design Best Practices
+
+✓ DO:
+- Use segmented route tables for isolation
+- Implement multi-region for disaster recovery
+- Monitor attachment health with CloudWatch
+- Enable VPN backup for Direct Connect
+- Document network topology
+- Use naming conventions for attachments
+- Enable flow logs for troubleshooting
+- Test failover scenarios regularly
+- Use shared services VPC pattern
+- Monitor TGW utilization
+
+✗ DON'T:
+- Connect everything to single route table
+- Use Transit Gateway for single VPC
+- Forget to update VPC route tables
+- Ignore attachment state changes
+- Route all traffic through single attachment
+- Use overlapping CIDR blocks
+- Assume automatic failover without testing
+- Create circular routes
+- Ignore CloudWatch alarms
+- Use default route tables without review
+
+### Security Best Practices
+
+```bash
+# 1. Enable flow logs
+aws ec2 create-flow-logs \
+  --resource-type TransitGateway \
+  --resource-ids $TGW \
+  --traffic-type ALL \
+  --log-destination-type cloud-watch-logs \
+  --log-group-name /aws/transit-gateway
+
+# 2. Restrict route propagation
+aws ec2 disable-transit-gateway-route-table-propagation \
+  --transit-gateway-route-table-id $RT \
+  --transit-gateway-attachment-id $ATTACH
+
+# 3. Use route tables to implement firewall policies
+# 4. Enable VPC Flow Logs to complement
+# 5. Use resource tags for access control
+# 6. Monitor for unauthorized attachments
+# 7. Implement SCPs to prevent mis-configuration
+```
+
+### Cost Optimization
+
+```bash
+# Monitor attachment costs
+aws ce get-cost-and-usage \
+  --time-period Start=2025-11-01,End=2025-11-30 \
+  --granularity MONTHLY \
+  --metrics BlendedCost \
+  --filter file://filter.json
+
+# Cost optimization strategies:
+# 1. Right-size attachments (remove unused)
+# 2. Use shared services to reduce duplicate resources
+# 3. Consolidate on fewer TGWs if possible
+# 4. Monitor data transfer rates
+# 5. Use VPN for non-critical connectivity (cheaper)
+```
+
+---
+
+## 12. Top 5 Interview Questions
+
+### Question 1: Transit Gateway vs VPC Peering
+
+**Difficulty:** Medium
+
+**The Question:**
+"Compare Transit Gateway and VPC Peering. When would you use each approach?"
+
+**Model Answer:**
+
+**Transit Gateway Benefits:**
+✓ **Scalability** - Supports 1000+ attachments vs limited peerings
+✓ **Centralized Management** - Single hub vs mesh peering
+✓ **Simplified Setup** - Single attachment vs N² peering relationships
+✓ **Multi-Region Native** - Built-in region peering support
+✓ **Network Segmentation** - Route tables for isolation
+✓ **On-Premises Integration** - Direct Connect and VPN support
+✓ **Monitoring** - Centralized CloudWatch metrics
+✓ **Cost Efficiency** - Single connection point reduces overhead
+
+**Transit Gateway Drawbacks:**
+✗ **Additional Costs** - Attachment fees and hourly charges
+✗ **Additional Latency** - Extra hop through central hub
+✗ **Configuration Complexity** - Route tables require planning
+✗ **Overkill for Small Deployments** - Cost not justified
+
+**VPC Peering Benefits:**
+✓ **No Additional Cost** - Free peering connections
+✓ **Lower Latency** - Direct connection (no hub)
+✓ **Simplicity** - Straightforward setup
+✓ **Good for Small Scale** - Sufficient for few VPCs
+✓ **AWS Native** - Direct AWS integration
+
+**VPC Peering Drawbacks:**
+✗ **Doesn't Scale** - Mesh complexity grows exponentially (N-1)!2
+✗ **Manual Management** - Each peering requires setup
+✗ **Multi-Region Complex** - Manual cross-region setup
+✗ **No Segmentation** - Flat network topology
+✗ **On-Premises Difficult** - No native DX/VPN integration
+✗ **Monitoring Overhead** - Per-peering metric collection
+
+**Decision Matrix:**
+
+| Scenario | Use TGW | Use Peering |
+|----------|---------|------------|
+| 3+ VPCs | TGW | - |
+| Multi-region | TGW | - |
+| On-premises connectivity | TGW | - |
+| Disaster recovery hub | TGW | - |
+| Network segmentation needed | TGW | - |
+| 2 VPCs in single region | Either | Peering (cheaper) |
+| Low latency critical | Peering | - |
+| Budget constrained (few VPCs) | - | Peering |
+| Compliance isolation | TGW | - |
+
+**Cost Comparison:**
+
+```
+Scenario: 5 VPCs, US-East region
+
+VPC Peering Approach:
+- 10 peering connections (5 × 4 / 2)
+- Cost: Free peering + data transfer
+- Total: ~$0/month (if low data transfer)
+
+Transit Gateway Approach:
+- 5 attachments × $0.30/hour = $110.40/month
+- 1 TGW × $0.375/hour = $273/month
+- Data transfer: ~$0.02/GB
+- Total: ~$383/month
+
+TGW Cost Justified When:
+- 10+ VPCs (TGW becomes cheaper)
+- Multi-region required
+- On-premises connectivity needed
+- Network management overhead high
+- Compliance/segmentation critical
+```
+
+**Recommendation:**
+- **Start with Peering** for 2-3 VPCs
+- **Migrate to TGW** when reaching 5+ VPCs or multi-region
+- **Always Use TGW** for enterprises with on-premises networks
+
+---
+
+### Question 2: Design Multi-VPC Network Segmentation
+
+**Difficulty:** High
+
+**The Question:**
+"Design a network architecture with 15 VPCs across 3 environments (production, development, staging) and on-premises data center. Include security isolation, disaster recovery, and cost optimization."
+
+**Model Answer:**
+
+**Architecture Overview:**
+
+```
+┌─────────────────────────────────────────────────┐
+│  AWS Multi-VPC Architecture (Single Region)     │
+├─────────────────────────────────────────────────┤
+│                                                 │
+│  Transit Gateway Hub                            │
+│  ├─ Production Route Table (5 VPCs)            │
+│  ├─ Development Route Table (5 VPCs)           │
+│  ├─ Staging Route Table (3 VPCs)               │
+│  └─ Shared Route Table (2 VPCs)                │
+│                                                 │
+│  VPC Distribution:                              │
+│  ├─ Production (Highly Isolated)                │
+│  │  ├─ VPC-App-1 (Web tier)                    │
+│  │  ├─ VPC-App-2 (API tier)                    │
+│  │  ├─ VPC-App-3 (Database tier)               │
+│  │  ├─ VPC-App-4 (Cache tier)                  │
+│  │  └─ VPC-App-5 (Backup tier)                 │
+│  │                                              │
+│  ├─ Development (Isolated, No On-Prem Access)  │
+│  │  ├─ VPC-Dev-1 (Frontend)                    │
+│  │  ├─ VPC-Dev-2 (Backend)                     │
+│  │  ├─ VPC-Dev-3 (Database)                    │
+│  │  ├─ VPC-Dev-4 (Testing)                     │
+│  │  └─ VPC-Dev-5 (Integration)                 │
+│  │                                              │
+│  ├─ Staging (Limited On-Prem Access)           │
+│  │  ├─ VPC-Stage-1 (Frontend)                  │
+│  │  ├─ VPC-Stage-2 (Backend)                   │
+│  │  └─ VPC-Stage-3 (Database)                  │
+│  │                                              │
+│  └─ Shared Services (All access)               │
+│     ├─ VPC-Logging (CloudWatch, VPC Logs)     │
+│     └─ VPC-DNS (Route 53 Private, DNS Cache)  │
+│                                                 │
+└─────────────────────────────────────────────────┘
+         │
+         ├─ DX Attachment (10 Gbps to On-Prem)
+         └─ VPN Attachment (Backup)
+```
+
+**Detailed Segmentation:**
+
+**1. Production Route Table**
+```
+Routes:
+├─ 10.0.0.0/16   → VPC-App-1 (Web)
+├─ 10.1.0.0/16   → VPC-App-2 (API)
+├─ 10.2.0.0/16   → VPC-App-3 (Database)
+├─ 10.3.0.0/16   → VPC-App-4 (Cache)
+├─ 10.4.0.0/16   → VPC-App-5 (Backup)
+├─ 192.168.0.0/16 → On-Premises (via DX)
+├─ 10.50.0.0/16  → Shared-Logging
+└─ 10.51.0.0/16  → Shared-DNS
+
+Access Control:
+- Can access: All prod VPCs + Shared + On-Prem
+- Cannot access: Dev or Staging
+- Isolation: Complete from other environments
+```
+
+**2. Development Route Table**
+```
+Routes:
+├─ 10.10.0.0/16  → VPC-Dev-1 (Frontend)
+├─ 10.11.0.0/16  → VPC-Dev-2 (Backend)
+├─ 10.12.0.0/16  → VPC-Dev-3 (Database)
+├─ 10.13.0.0/16  → VPC-Dev-4 (Testing)
+├─ 10.14.0.0/16  → VPC-Dev-5 (Integration)
+├─ 10.50.0.0/16  → Shared-Logging
+└─ 10.51.0.0/16  → Shared-DNS
+
+Access Control:
+- Can access: Dev VPCs + Shared only
+- Cannot access: Production or On-Premises
+- Isolation: Complete from prod/on-prem
+- Cost: No data transfer costs for restricted access
+```
+
+**3. Staging Route Table**
+```
+Routes:
+├─ 10.20.0.0/16  → VPC-Stage-1 (Frontend)
+├─ 10.21.0.0/16  → VPC-Stage-2 (Backend)
+├─ 10.22.0.0/16  → VPC-Stage-3 (Database)
+├─ 192.168.0.0/16 → On-Premises (Limited)
+├─ 10.50.0.0/16  → Shared-Logging
+└─ 10.51.0.0/16  → Shared-DNS
+
+Access Control:
+- Can access: Staging VPCs + Shared + Limited On-Prem
+- Cannot access: Production directly
+- Isolation: One-way access to on-premises
+```
+
+**4. Shared Route Table**
+```
+Routes:
+├─ 10.0.0.0/16   → VPC-App-1 (Prod)
+├─ 10.1.0.0/16   → VPC-App-2 (Prod)
+├─ 10.2.0.0/16   → VPC-App-3 (Prod)
+├─ 10.3.0.0/16   → VPC-App-4 (Prod)
+├─ 10.4.0.0/16   → VPC-App-5 (Prod)
+├─ 10.10.0.0/16  → VPC-Dev-1 (Dev)
+├─ 10.11.0.0/16  → VPC-Dev-2 (Dev)
+├─ 10.12.0.0/16  → VPC-Dev-3 (Dev)
+├─ 10.13.0.0/16  → VPC-Dev-4 (Dev)
+├─ 10.14.0.0/16  → VPC-Dev-5 (Dev)
+├─ 10.20.0.0/16  → VPC-Stage-1 (Staging)
+├─ 10.21.0.0/16  → VPC-Stage-2 (Staging)
+├─ 10.22.0.0/16  → VPC-Stage-3 (Staging)
+├─ 192.168.0.0/16 → On-Premises (via DX)
+└─ 10.51.0.0/16  → Shared-DNS
+
+Access Control:
+- Can be accessed by: All environments
+- Accessible to: All environments
+- Use Case: Logging, centralized DNS, monitoring
+```
+
+**Implementation Steps:**
+
+```bash
+# 1. Create route tables
+PROD_RT=$(aws ec2 create-transit-gateway-route-table \
+  --transit-gateway-id $TGW \
+  --tag-specifications 'ResourceType=transit-gateway-route-table,Tags=[{Key=Environment,Value=Production}]')
+
+DEV_RT=$(aws ec2 create-transit-gateway-route-table \
+  --transit-gateway-id $TGW \
+  --tag-specifications 'ResourceType=transit-gateway-route-table,Tags=[{Key=Environment,Value=Development}]')
+
+STAGE_RT=$(aws ec2 create-transit-gateway-route-table \
+  --transit-gateway-id $TGW \
+  --tag-specifications 'ResourceType=transit-gateway-route-table,Tags=[{Key=Environment,Value=Staging}]')
+
+SHARED_RT=$(aws ec2 create-transit-gateway-route-table \
+  --transit-gateway-id $TGW \
+  --tag-specifications 'ResourceType=transit-gateway-route-table,Tags=[{Key=Environment,Value=Shared}]')
+
+# 2. Associate VPCs to route tables
+# (Production VPCs to PROD_RT, etc.)
+
+# 3. Create routes for each environment
+# (As shown in sections above)
+
+# 4. Enable propagation where appropriate
+aws ec2 enable-transit-gateway-route-table-propagation \
+  --transit-gateway-route-table-id $PROD_RT \
+  --transit-gateway-attachment-id $DX_ATTACHMENT
+```
+
+**Disaster Recovery:**
+
+```
+Multi-Region Setup:
+├─ Primary Region (US-East)
+│  └─ Transit Gateway with VPCs
+├─ Backup Region (US-West)
+│  └─ Replica Transit Gateway
+└─ Peering Link (Active-Active)
+
+RTO: < 1 minute (automatic failover)
+RPO: 0 (continuous replication)
+```
+
+**Cost Optimization:**
+
+```
+Monthly Costs:
+─────────────
+Transit Gateway: 1 × $273/month
+
+Attachments (15 VPCs):
+- 15 VPCs × $0.30/hour × 730 hours/month = $3,285/month
+
+Direct Connect:
+- 1 × 10 Gbps connection × $0.30/hour = $219/month
+
+VPN Backup:
+- $36/month
+
+Data Transfer (Estimated):
+- Within region (TGW): $0 (no charge for inter-TGW traffic)
+- To Internet: ~$500/month
+- Total Data: ~$500/month
+
+────────────────────────
+Total: ~$4,813/month
+
+Cost Per VPC: $321/month (including TGW share)
+
+Savings vs Full Mesh Peering:
+- 15 VPCs = 105 peering connections (15 × 14 / 2)
+- Each peering = data transfer costs + management overhead
+- TGW centralization saves ~30% vs full mesh
+```
+
+---
+
+### Question 3: Troubleshoot Multi-Region Transit Gateway
+
+**Difficulty:** High
+
+**The Question:**
+"VPCs in US-East cannot reach VPCs in EU-West via Transit Gateway peering. Walk through systematic troubleshooting."
+
+**Model Answer:**
+
+**Step 1: Verify Peering Status**
+
+```bash
+# Check peering attachment state
+aws ec2 describe-transit-gateway-attachments \
+  --filters "Name=resource-type,Values=peering" \
+  --query 'TransitGatewayAttachments[*].[TransitGatewayAttachmentId,State,ResourceOwnerId,Tags[?Key==`Name`].Value|[0]]' \
+  --output table
+
+# Expected state: available
+# If state is pending: Not accepted by peer
+# If state is failed: Check CloudTrail for errors
+# If state is rejected: Peer explicitly rejected
+```
+
+**Step 2: Verify Route Propagation**
+
+```bash
+# Check if routes are propagated in US-East
+aws ec2 search-transit-gateway-routes \
+  --transit-gateway-route-table-id tgw-rtb-us-east \
+  --filters "Name=state,Values=active,blackhole" \
+  --query 'Routes[?DestinationCidrBlock==`10.100.0.0/16`]' \
+  --output json
+
+# Look for EU CIDR block in US-East routes
+# If not present: Routes not propagated
+
+# Check EU-West routes
+aws ec2 search-transit-gateway-routes \
+  --transit-gateway-route-table-id tgw-rtb-eu-west \
+  --filters "Name=state,Values=active,blackhole" \
+  --query 'Routes[?DestinationCidrBlock==`10.0.0.0/16`]' \
+  --region eu-west-1 \
+  --output json
+
+# If routes missing: Enable propagation
+aws ec2 enable-transit-gateway-route-table-propagation \
+  --transit-gateway-route-table-id tgw-rtb-us-east \
+  --transit-gateway-attachment-id $PEERING_ATTACH
+```
+
+**Step 3: Verify Attachment Association**
+
+```bash
+# Check if peering attachment is associated to route table
+aws ec2 describe-transit-gateway-route-tables \
+  --transit-gateway-route-table-id tgw-rtb-us-east \
+  --query 'TransitGatewayRouteTables[0].Associations[*].[TransitGatewayAttachmentId,State]' \
+  --output table
+
+# Peering attachment should be listed with state: associated
+# If not listed: Create association
+
+aws ec2 associate-transit-gateway-route-table \
+  --transit-gateway-route-table-id tgw-rtb-us-east \
+  --transit-gateway-attachment-id $PEERING_ATTACH
+```
+
+**Step 4: Check VPC Route Tables**
+
+```bash
+# From US-East VPC, check route table
+aws ec2 describe-route-tables \
+  --route-table-ids rtb-us-east-prod \
+  --query 'RouteTables[0].Routes[*].[DestinationCidrBlock,GatewayId,TransitGatewayId]' \
+  --output table
+
+# Should have:
+# 0.0.0.0/0 or 10.100.0.0/16 → tgw-us-east (Transit Gateway)
+
+# If missing: Add route
+aws ec2 create-route \
+  --route-table-id rtb-us-east-prod \
+  --destination-cidr-block 10.100.0.0/16 \
+  --transit-gateway-id tgw-us-east
+
+# Repeat for EU-West VPCs
+```
+
+**Step 5: Verify Security Groups**
+
+```bash
+# From US-East EC2, attempt connection to EU-West EC2
+ping -c 3 10.100.1.50
+
+# If no response:
+# Check security group rules on EU-West EC2
+aws ec2 describe-security-groups \
+  --group-ids sg-eu-west-prod \
+  --query 'SecurityGroups[0].IpPermissions' \
+  --region eu-west-1 \
+  --output table
+
+# Ensure ingress rule allows:
+# - ICMP from 10.0.0.0/16 (US-East)
+# - Or All traffic from 10.0.0.0/16
+
+# Add if missing:
+aws ec2 authorize-security-group-ingress \
+  --group-id sg-eu-west-prod \
+  --protocol all \
+  --cidr 10.0.0.0/16 \
+  --region eu-west-1
+```
+
+**Step 6: Check Network ACLs**
+
+```bash
+# Verify NACLs allow traffic
+aws ec2 describe-network-acls \
+  --filters "Name=association.subnet-id,Values=subnet-eu-west-prod" \
+  --query 'NetworkAcls[0].Entries' \
+  --region eu-west-1 \
+  --output table
+
+# Look for rules allowing:
+# - Ingress from 10.0.0.0/16
+# - Egress to 10.0.0.0/16
+
+# Add if missing:
+aws ec2 create-network-acl-entry \
+  --network-acl-id acl-eu-west \
+  --rule-number 100 \
+  --protocol all \
+  --cidr-block 10.0.0.0/16 \
+  --ingress \
+  --region eu-west-1
+```
+
+**Step 7: Enable Flow Logs**
+
+```bash
+# Enable flow logs for TGW
+aws ec2 create-flow-logs \
+  --resource-type TransitGateway \
+  --resource-ids tgw-us-east \
+  --traffic-type ALL \
+  --log-destination-type cloud-watch-logs \
+  --log-group-name /aws/transit-gateway/us-east
+
+# Check logs for dropped packets
+aws logs filter-log-events \
+  --log-group-name /aws/transit-gateway/us-east \
+  --filter-pattern "[version, account, interface_id, srcaddr, dstaddr, srcport, dstport, protocol, packets, bytes, windowstart, windowend, action=\"REJECT\", flowlogstatus]" \
+  --query 'events[0:10]' \
+  --output text
+```
+
+**Diagnosis Table:**
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Peering state: pending | Not accepted | Accept in peer region |
+| Peering state: failed | Configuration error | Check CloudTrail, delete and recreate |
+| Routes not propagated | Propagation disabled | Enable propagation on attachment |
+| Routes missing from VPC | VPC route table incomplete | Add route to transit gateway |
+| Connection timeout | Security group rule | Add ingress rule for source CIDR |
+| Connection refused | Application issue | Check app on EC2 |
+| Intermittent failures | Network issue or MTU | Check BGP session, test MTU size |
+
+**Complete Troubleshooting Checklist:**
+
+```
+☐ Peering attachment exists and state is "available"
+☐ Peering accepted in both regions
+☐ Peering attachment associated to route tables
+☐ Route propagation enabled
+☐ Routes visible in TGW route tables
+☐ Routes present in VPC route tables
+☐ Security group rules allow traffic
+☐ Network ACLs allow traffic
+☐ EC2 instance security group has rule
+☐ Destination subnet NACL has rule
+☐ Both subnets are in different AZs (for HA)
+☐ Testing EC2 can reach gateway (ping)
+☐ BGP session established (if using DX)
+```
+
+---
+
+### Question 4: Design Cost-Optimized Multi-VPC Network
+
+**Difficulty:** Medium-High
+
+**The Question:**
+"You have 20 VPCs across 3 environments and budget constraints. Design a cost-optimized network architecture without compromising security."
+
+**Model Answer:**
+
+**Cost Analysis:**
+
+```
+Current/Expensive Approach (Mesh Peering):
+- 20 VPCs = 190 peering connections (20 × 19 / 2)
+- Cost: Free peering + data transfer
+- Management: Exponentially complex
+
+Transit Gateway Approach:
+- Monthly base: TGW ($273) + 20 attachments ($4,380) = $4,653
+- Expensive at small scale, but includes management
+
+Optimized Approach:
+- Use fewer TGWs with segmentation
+- Reduce attachment count via hierarchical design
+- Leverage shared services VPC pattern
+```
+
+**Optimized Architecture:**
+
+```
+┌───────────────────────────────────────────┐
+│  Single Transit Gateway                   │
+│  (US-East-1)                              │
+├───────────────────────────────────────────┤
+│                                           │
+│  Route Tables:                            │
+│  ├─ Production (5 VPCs)                  │
+│  ├─ Development (8 VPCs)                 │
+│  ├─ Staging (4 VPCs)                     │
+│  └─ Shared (2 VPCs, 1 attachment split) │
+│                                           │
+│  Cost: $4,653/month                       │
+│  Complexity: Manageable                   │
+│  Benefits: Centralized, scalable          │
+│                                           │
+└───────────────────────────────────────────┘
+```
+
+**Cost Reduction Strategies:**
+
+**1. Hierarchical Attachment**
+
+```bash
+# Instead of: 20 separate TGW attachments
+# Use: Shared Service VPC as consolidation point
+
+# Shared VPC pattern:
+# - VPC-Logging (central logging hub)
+# - VPC-DNS (shared DNS resolver)
+# - Attached once: 2 attachments
+# - Other VPCs peer to shared (via Route 53)
+
+# Cost savings: Reduces from 20 to 2 TGW attachments
+# Savings: 18 × $0.30/hour × 730 = $3,942/month
+```
+
+**2. Consolidate Development Environment**
+
+```bash
+# Option 1 (Expensive): Each dev VPC separate attachment
+# - VPC-Dev-1, VPC-Dev-2, ..., VPC-Dev-8
+# - Cost: 8 attachments × $219/month = $1,752
+
+# Option 2 (Optimized): Consolidated dev VPC
+# - Single large VPC-Dev with separate subnets per team
+# - Teams isolated via security groups + NACLs
+# - Cost: 1 attachment × $219/month = $219
+# - Savings: $1,533/month per month
+
+# Trade-off: Less isolation but acceptable for dev
+```
+
+**3. Use VPN for Non-Critical**
+
+```bash
+# Current: All DX + TGW
+# Optimized: DX for prod, VPN for dev
+
+# Architecture:
+# ├─ Production: DX + TGW (reliable, expensive)
+# │  Cost: $492/month (connection)
+# └─ Development: VPN + TGW (cheaper)
+#    Cost: $36/month
+
+# Savings: $456/month
+# Trade-off: Dev has variable latency
+```
+
+**Fully Optimized Design:**
+
+```
+Monthly Costs:
+──────────────
+
+Transit Gateway Components:
+- Base TGW: $273
+- 7 attachments (not 20): $1,533
+  * 5 Prod VPCs (1 consolidated)
+  * 1 Dev VPC (consolidated)
+  * 1 Staging VPC (consolidated)
+  
+On-Premises Connectivity:
+- Direct Connect 10Gbps: $219
+- VPN Backup: $36
+
+Shared Services (Estimated):
+- VPC costs (compute, storage): $300
+- Data transfer: $100
+
+────────────────────────────
+Total: ~$2,461/month
+
+Savings vs Mesh Peering:
+- No peering overhead (~$500/month saved)
+- Reduced management cost (automation)
+- Simplified monitoring
+
+Savings vs Full TGW (20 attachments):
+- Reduced attachments: $2,535/month
+- Better cost efficiency
+```
+
+**Implementation:**
+
+```bash
+# 1. Create single Transit Gateway
+TGW=$(aws ec2 create-transit-gateway \
+  --description "Consolidated-TGW" \
+  --query 'TransitGateway.TransitGatewayId' \
+  --output text)
+
+# 2. Consolidate dev environment
+aws ec2 create-transit-gateway-vpc-attachment \
+  --transit-gateway-id $TGW \
+  --vpc-id vpc-dev-consolidated \
+  --subnet-ids subnet-dev-1a subnet-dev-1b
+
+# 3. Attach prod VPCs (keep separate for isolation)
+aws ec2 create-transit-gateway-vpc-attachment \
+  --transit-gateway-id $TGW \
+  --vpc-id vpc-prod-consolidated \
+  --subnet-ids subnet-prod-1a subnet-prod-1b
+
+# 4. Use Route 53 for dev inter-VPC communication
+# Instead of Transit Gateway routing (saves cost)
+```
+
+---
+
+### Question 5: Multi-Region Hub-and-Spoke Design
+
+**Difficulty:** High
+
+**The Question:**
+"Design a global multi-region hub-and-spoke network with Transit Gateways for an enterprise with data residency requirements."
+
+**Model Answer:**
+
+**Global Architecture:**
+
+```
+┌──────────────────────────────────────────────────────┐
+│         Global Network Architecture                  │
+├──────────────────────────────────────────────────────┤
+│                                                      │
+│  US-East-1 (Primary Hub)                             │
+│  ├─ Transit Gateway (tgw-us-east)                   │
+│  ├─ Prod VPCs (3)                                   │
+│  ├─ Dev VPCs (2)                                    │
+│  └─ On-Premises (DX connection)                     │
+│      │                                               │
+│      ├─── Peering ───→ EU-West-1 (TGW)              │
+│      ├─── Peering ───→ AP-SE-1 (TGW)                │
+│      └─── Peering ───→ CA-Central-1 (TGW)           │
+│                                                      │
+│  EU-West-1 (Europe Hub)                              │
+│  ├─ Transit Gateway (tgw-eu-west)                   │
+│  ├─ Prod VPCs (3) - GDPR compliant                  │
+│  ├─ Dev VPCs (2) - EU data only                    │
+│  └─ On-Premises (EU DX connection)                  │
+│                                                      │
+│  AP-SE-1 (Asia Hub)                                  │
+│  ├─ Transit Gateway (tgw-ap-se)                     │
+│  ├─ Prod VPCs (2) - PII data locally kept           │
+│  ├─ Dev VPCs (1)                                    │
+│  └─ No on-premises (VPN for remote offices)         │
+│                                                      │
+│  CA-Central-1 (Canada Hub)                           │
+│  ├─ Transit Gateway (tgw-ca-central)                │
+│  ├─ Prod VPCs (1) - Data residency compliant        │
+│  └─ Dev VPCs (1)                                    │
+│                                                      │
+└──────────────────────────────────────────────────────┘
+```
+
+**Data Residency Requirements:**
+
+```
+Compliance Constraints:
+─────────────────────
+GDPR (EU Data):
+├─ Data stored in EU-West-1 only
+├─ No replication to US
+├─ Separate TGW and isolated routes
+
+HIPAA (Healthcare):
+├─ US-East-1 primary location
+├─ CA-Central-1 backup (Canadian servers act as replica)
+├─ Encryption required
+
+APAC (Local Data):
+├─ Data stored in AP-SE-1 only
+├─ Limited connection to US/EU
+├─ Separate routing via firewall
+```
+
+**Multi-Region Routing Strategy:**
+
+```
+Scenario 1: User in US accessing US-based resource
+User (US) → Route 53 (US-East)
+         → TGW US-East (no cross-region routing)
+         → VPC-Prod-US
+         
+Latency: <20ms
+Cost: Minimal (intra-region)
+
+Scenario 2: EU user accessing EU resource
+User (EU) → Route 53 (EU-West)
+        → TGW EU-West (no cross-region routing)
+        → VPC-Prod-EU
+        
+Latency: <20ms
+Cost: Minimal (intra-region)
+GDPR: Compliant (no US involvement)
+
+Scenario 3: Central application needs data from multiple regions
+App (US) → TGW US-East (primary)
+       → Peering to TGW EU-West (secondary)
+       → VPC-Prod-EU (via peering link)
+
+Latency: 80-100ms
+Cost: Data transfer (peering)
+Risk: GDPR violation if PII crosses border
+Solution: Implement application-level routing or replication
+```
+
+**Implementation:**
+
+```bash
+# 1. Create regional Transit Gateways
+TGW_US=$(aws ec2 create-transit-gateway \
+  --description "US-East Hub" \
+  --region us-east-1 \
+  --query 'TransitGateway.TransitGatewayId' \
+  --output text)
+
+TGW_EU=$(aws ec2 create-transit-gateway \
+  --description "EU-West Hub" \
+  --region eu-west-1 \
+  --query 'TransitGateway.TransitGatewayId' \
+  --output text)
+
+TGW_AP=$(aws ec2 create-transit-gateway \
+  --description "AP-SE Hub" \
+  --region ap-southeast-1 \
+  --query 'TransitGateway.TransitGatewayId' \
+  --output text)
+
+# 2. Create peering between regions
+# US-East ↔ EU-West
+PEERING_US_EU=$(aws ec2 create-transit-gateway-peering-attachment \
+  --transit-gateway-id $TGW_US \
+  --peer-transit-gateway-id $TGW_EU \
+  --peer-account-id 123456789012 \
+  --peer-region eu-west-1 \
+  --region us-east-1 \
+  --query 'TransitGatewayPeeringAttachment.TransitGatewayAttachmentId' \
+  --output text)
+
+# Accept in EU-West
+aws ec2 accept-transit-gateway-peering-attachment \
+  --transit-gateway-attachment-id $PEERING_US_EU \
+  --region eu-west-1
+
+# 3. Create region-specific route tables
+# US route table: No EU routes (data residency)
+RT_US=$(aws ec2 create-transit-gateway-route-table \
+  --transit-gateway-id $TGW_US \
+  --region us-east-1)
+
+# EU route table: No US routes (GDPR)
+RT_EU=$(aws ec2 create-transit-gateway-route-table \
+  --transit-gateway-id $TGW_EU \
+  --region eu-west-1)
+
+# 4. Configure routes carefully
+# US can reach other US regions via peering
+aws ec2 create-transit-gateway-route \
+  --transit-gateway-route-table-id $RT_US \
+  --destination-cidr-block 10.100.0.0/16 \
+  --transit-gateway-attachment-id $PEERING_US_EU \
+  --region us-east-1
+
+# EU can reach other EU/US if needed
+aws ec2 create-transit-gateway-route \
+  --transit-gateway-route-table-id $RT_EU \
+  --destination-cidr-block 10.0.0.0/16 \
+  --transit-gateway-attachment-id $PEERING_US_EU \
+  --region eu-west-1
+```
+
+**Disaster Recovery:**
+
+```
+Primary-Secondary Setup:
+├─ US-East-1: Primary (Active)
+├─ CA-Central-1: Secondary (Standby)
+└─ Failover: Manual or automated via Route 53
+
+RTO: 5-10 minutes (update Route 53)
+RPO: Real-time (continuous replication)
+
+Implementation:
+1. Set up Route 53 health checks
+2. Create failover routing policy
+3. Test failover monthly
+```
+
+**Cost Optimization for Multi-Region:**
+
+```
+Monthly Costs Breakdown:
+────────────────────────
+
+Transit Gateways (4 regions):
+- 4 × $273 = $1,092
+
+Attachments (11 total across regions):
+- 11 × $219 = $2,409
+
+Inter-Region Peering:
+- 3 peering links × $0.02/GB (estimate 100 GB/month)
+- Data transfer: ~$2/month (minimal)
+
+On-Premises Connections:
+- US DX 10Gbps: $219
+- EU DX 10Gbps: $219
+- AP VPN: $36
+
+────────────────────────
+Total: ~$3,976/month
+
+Cost Optimization:
+- Use route tables to minimize cross-region traffic
+- Implement app-level data locality
+- Monitor data transfer between regions
+- Use CloudWatch for cost tracking
+```
+
+---
+
+## Summary
+
+AWS Transit Gateway provides:
+
+✅ **Centralized Hub** - Single connection point for all networks
+✅ **Simplified Architecture** - Eliminates complex VPC peering
+✅ **Multi-Region** - Native cross-region connectivity
+✅ **Scalability** - Supports 1000+ attachments
+✅ **Segmentation** - Route tables for network isolation
+✅ **On-Premises** - Direct Connect and VPN integration
+✅ **High Availability** - Automatic failover and redundancy
+✅ **Monitoring** - CloudWatch metrics and Flow Logs
+✅ **Cost Efficiency** - Centralized vs mesh cost trade-offs
+✅ **Compliance** - Data residency and isolation support
+
+---
+
+**Document Version:** 1.0
+**Last Updated:** November 30, 2025
+**Coverage:** Complete guide on AWS Transit Gateway with core concepts, attachments, routing, multi-region setup, and top 5 interview questions with comprehensive model answers.
